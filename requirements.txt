@@ -1,0 +1,25 @@
+# Pip fallback for Colab / Kaggle, where conda is unavailable.
+# Kept in lockstep with environment.yml — change both together.
+
+pandas==3.0.5
+pyarrow==25.0.0
+numpy==2.5.1
+
+# Lexical retrieval
+bm25s==0.3.10
+nltk==3.10.1
+
+# Semantic retrieval
+faiss-cpu==1.15.0
+sentence-transformers==5.6.1
+
+# Metrics
+scikit-learn==1.9.0
+
+# Data acquisition
+huggingface-hub==1.26.0
+gdown==6.1.0
+requests==2.34.2
+
+tqdm==4.70.0
+pytest==9.1.1

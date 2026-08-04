@@ -1,0 +1,29 @@
+# Raw data and everything derived from it — never committed (assignment Q8).
+data/
+feature_store/
+artifacts/
+predictions/
+.checkpoints/
+
+# Archives and model weights, wherever they land.
+*.zip
+*.tar
+*.tar.gz
+*.npy
+*.parquet
+*.pt
+*.ckpt
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Notebook cruft
+.ipynb_checkpoints/
+
+# Credentials
+.env

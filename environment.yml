@@ -1,0 +1,28 @@
+# Local development environment.
+# Kept in lockstep with requirements.txt — change both together.
+#
+#   conda env create -f environment.yml
+#   conda activate vub-news
+
+name: vub-news
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - pandas==3.0.5
+      - pyarrow==25.0.0
+      - numpy==2.5.1
+      - bm25s==0.3.10
+      - nltk==3.10.1
+      - faiss-cpu==1.15.0
+      - sentence-transformers==5.6.1
+      - scikit-learn==1.9.0
+      - huggingface-hub==1.26.0
+      - gdown==6.1.0
+      - requests==2.34.2
+      - tqdm==4.70.0
+      - pytest==9.1.1

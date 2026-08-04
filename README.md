@@ -19,8 +19,25 @@ pip install -r requirements.txt
 
 The two files are kept in lockstep — change both together.
 
-MIND is downloaded from the `yjw1029/MIND` HuggingFace mirror, which needs a token
-(the official Microsoft endpoint returns HTTP 409):
+### The HuggingFace token
+
+MIND is downloaded from the `yjw1029/MIND` HuggingFace mirror, because the official Microsoft
+endpoint returns HTTP 409. That mirror is a **gated repo**, so getting a token is two steps:
+
+1. Open <https://huggingface.co/datasets/yjw1029/MIND> while logged in and accept its terms. A
+   valid token belonging to an account that has not accepted them is still refused.
+2. Create a read token at <https://huggingface.co/settings/tokens>.
+
+Then put it in a **`.env` file in the repo root** — create it yourself, it is not in the repo:
+
+```bash
+echo 'HF_TOKEN=hf_...' > .env
+```
+
+`build.py` reads `.env` on startup, so the token survives across shells and you only do this once.
+It is listed in `.gitignore` and must never be committed.
+
+Exporting the variable works too and takes precedence over the file:
 
 ```bash
 export HF_TOKEN=hf_...
@@ -45,7 +62,13 @@ python build.py
 | `python build.py --force all` | rebuild from scratch |
 
 Each stage writes a checkpoint under `.checkpoints/<dataset>/` when it finishes, so an interrupted
-run resumes where it stopped rather than redoing completed work.
+run resumes where it stopped rather than redoing completed work. A forced stage redoes its work even
+if its outputs are already on disk.
+
+Downloaded archives are kept under `data/raw/<dataset>/_archives/` (445 MB for EB-NeRD, 100 MB for
+MIND), so a re-download is never needed. An archive is opened before it is trusted, so a truncated
+one is re-fetched rather than extracted, and an interrupted download leaves only a `.part` file that
+nothing will mistake for good data.
 
 ```bash
 pytest
@@ -58,6 +81,7 @@ build.py              one-command entry point
 pipeline/
   datasets.py         the dataset registry — the one place MIND and EB-NeRD differ
   stages.py           pipeline stages in dependency order, plus checkpointing
+  acquire.py          download and extract raw archives
   paths.py            filesystem layout
 tests/
 ```
@@ -79,6 +103,7 @@ and `HISTORY_COLUMNS`. Both datasets map onto exactly those columns, and a test 
 
 ## Status
 
-The scaffold, the registry and the checkpointed stage runner exist. The stages themselves are
-declared but not yet implemented — `python build.py` reports them as `not built` and skips them.
-They land ticket by ticket; see `../tickets/` for the breakdown and the dependency graph.
+The scaffold, the registry, the checkpointed stage runner and raw data acquisition exist. The
+remaining stages are declared but not yet implemented — `python build.py` reports them as
+`not built` and skips them. They land ticket by ticket; see `../tickets/` for the breakdown and the
+dependency graph.

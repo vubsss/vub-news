@@ -49,10 +49,17 @@ HISTORY_COLUMNS = (
 
 @dataclass(frozen=True)
 class Archive:
-    """One downloadable file."""
+    """One downloadable file and where its contents belong.
+
+    extract_to is a subdirectory of the dataset's raw directory; "" means the
+    raw directory itself. A single wrapping directory inside the archive is
+    stripped on extraction, so the layout below extract_to is the archive's
+    real content either way.
+    """
 
     url: str
     filename: str
+    extract_to: str
 
 
 @dataclass(frozen=True)
@@ -128,8 +135,10 @@ MIND = DatasetConfig(
         # The official MIND endpoint is dead (HTTP 409); this HF mirror is the
         # working source and it requires a token.
         archives=(
-            Archive(f"{_HF_MIND}/MINDsmall_train.zip", "MINDsmall_train.zip"),
-            Archive(f"{_HF_MIND}/MINDsmall_dev.zip", "MINDsmall_dev.zip"),
+            Archive(
+                f"{_HF_MIND}/MINDsmall_train.zip", "MINDsmall_train.zip", "train"
+            ),
+            Archive(f"{_HF_MIND}/MINDsmall_dev.zip", "MINDsmall_dev.zip", "dev"),
         ),
         expected_files=(
             "train/news.tsv",
@@ -189,10 +198,11 @@ EBNERD = DatasetConfig(
     language="danish",
     raw=RawSpec(
         archives=(
-            Archive(f"{_EBNERD_S3}/ebnerd_small.zip", "ebnerd_small.zip"),
+            Archive(f"{_EBNERD_S3}/ebnerd_small.zip", "ebnerd_small.zip", ""),
             Archive(
                 f"{_EBNERD_S3}/artifacts/google_bert_base_multilingual_cased.zip",
                 "google_bert_base_multilingual_cased.zip",
+                "embeddings",
             ),
         ),
         expected_files=(
@@ -201,6 +211,7 @@ EBNERD = DatasetConfig(
             "train/history.parquet",
             "validation/behaviors.parquet",
             "validation/history.parquet",
+            "embeddings/bert_base_multilingual_cased.parquet",
         ),
         token_env=None,
     ),

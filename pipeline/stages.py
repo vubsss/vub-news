@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from pipeline import paths
+from pipeline import acquire, paths
 from pipeline.datasets import DatasetConfig
 
 
@@ -19,11 +19,14 @@ from pipeline.datasets import DatasetConfig
 class Stage:
     name: str
     description: str
-    run: Callable[[DatasetConfig], None] | None = None
+    # Called as run(config, force). A stage that skips itself when its outputs
+    # already exist must do that work anyway when force is set — otherwise
+    # `build.py --force <stage>` would silently do nothing.
+    run: Callable[[DatasetConfig, bool], None] | None = None
 
 
 STAGES = (
-    Stage("acquire", "download and extract raw archives (ticket 2)"),
+    Stage("acquire", "download and extract raw archives", acquire.run),
     Stage("ingest", "raw files -> unified schema feature store (ticket 3)"),
     Stage("split", "temporal train/val/test split + leakage guards (ticket 4)"),
     Stage("preprocess", "build lexical_text for the dataset's language (ticket 5)"),

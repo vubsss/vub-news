@@ -1,4 +1,5 @@
 import dataclasses
+import os
 
 import build
 from pipeline import paths, stages
@@ -47,7 +48,52 @@ def test_checkpoints_are_per_dataset(tmp_path, monkeypatch):
 
 
 def test_build_runs_on_a_clone_with_no_data():
-    assert build.main([]) == 0
+    # --plan, because the bare command now really downloads things.
+    assert build.main(["--plan"]) == 0
+
+
+def test_acquisition_failure_exits_non_zero_without_a_traceback(
+    tmp_path, monkeypatch, capsys
+):
+    # Isolated from whatever this machine has already downloaded, so the run
+    # really does need a token. Also stops the test hitting the network.
+    monkeypatch.setattr(paths, "RAW_DIR", tmp_path / "raw")
+    monkeypatch.setattr(paths, "CHECKPOINT_DIR", tmp_path / "checkpoints")
+    # ROOT too, or the repo's real .env would hand the run a working token.
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+
+    assert build.main(["--dataset", "mind"]) == 1
+
+    stderr = capsys.readouterr().err
+    assert "HF_TOKEN" in stderr
+    assert "Traceback" not in stderr
+
+
+def test_env_file_supplies_credentials(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    (tmp_path / ".env").write_text("# comment\n\nHF_TOKEN='from-file'\n")
+
+    build.load_env_file()
+
+    assert os.environ["HF_TOKEN"] == "from-file"
+
+
+def test_exported_variable_beats_the_env_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.setenv("HF_TOKEN", "from-shell")
+    (tmp_path / ".env").write_text("HF_TOKEN=from-file\n")
+
+    build.load_env_file()
+
+    assert os.environ["HF_TOKEN"] == "from-shell"
+
+
+def test_missing_env_file_is_not_an_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+
+    build.load_env_file()
 
 
 def test_unknown_force_target_is_rejected():
@@ -63,7 +109,7 @@ def test_unbuilt_stages_are_reported_as_such():
 def test_force_marks_a_done_stage_pending(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "CHECKPOINT_DIR", tmp_path)
     dataset = DATASETS["mind"]
-    stage = dataclasses.replace(STAGES[0], run=lambda config: None)
+    stage = dataclasses.replace(STAGES[0], run=lambda config, force=False: None)
     stages.mark_done(stage, dataset)
 
     assert build.status(stage, dataset, forced=set()) == build.DONE

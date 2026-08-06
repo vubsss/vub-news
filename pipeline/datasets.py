@@ -8,10 +8,11 @@ rather than branching on the name.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from pipeline import paths
+from pipeline import paths, sources
 
 # A unified-schema column with no direct source column: the ingest stage
 # (ticket 3) builds it from other source columns.
@@ -45,6 +46,29 @@ HISTORY_COLUMNS = (
     "n_clicks",
     "dataset",
 )
+
+# The dtype every unified column carries, whichever dataset produced it. Both
+# datasets are conformed to these, so no downstream stage has to care that one
+# arrived as tab-separated text and the other as parquet.
+COLUMN_DTYPES = {
+    "article_id": "string",
+    "title": "string",
+    "abstract": "string",
+    "body": "string",
+    "category": "string",
+    "subcategory": "string",
+    "published_time": "datetime64[us]",
+    "lexical_text": "string",
+    "dataset": "string",
+    "impression_id": "string",
+    "user_id": "string",
+    "impression_time": "datetime64[us]",
+    "candidate_ids": "object",
+    "labels": "object",
+    "split": "string",
+    "click_history": "object",
+    "n_clicks": "int64",
+}
 
 
 @dataclass(frozen=True)
@@ -85,6 +109,27 @@ class ColumnMap:
 
 
 @dataclass(frozen=True)
+class TableSource:
+    """Where one unified table's raw input lives and how to turn it into one."""
+
+    # Paths under the dataset's raw directory, concatenated in order.
+    files: tuple[str, ...]
+    format: str  # "tsv" or "parquet"
+    # Positional column names, for headerless tsv. None when the file has them.
+    header: tuple[str, ...] | None
+    # The adapter from pipeline.sources that maps this dataset's raw frame onto
+    # the unified schema.
+    adapt: Callable[..., object]
+
+
+@dataclass(frozen=True)
+class SourceSpec:
+    articles: TableSource
+    behaviors: TableSource
+    history: TableSource
+
+
+@dataclass(frozen=True)
 class EmbeddingSpec:
     # "generate": produced by a notebook on a hosted GPU, fetched as an
     # artifact. "provided": ships with the dataset.
@@ -108,6 +153,7 @@ class DatasetConfig:
     name: str
     language: str
     raw: RawSpec
+    sources: SourceSpec
     columns: ColumnMap
     embeddings: EmbeddingSpec
     submission: SubmissionSpec
@@ -147,6 +193,36 @@ MIND = DatasetConfig(
             "dev/behaviors.tsv",
         ),
         token_env="HF_TOKEN",
+    ),
+    sources=SourceSpec(
+        articles=TableSource(
+            files=("train/news.tsv", "dev/news.tsv"),
+            format="tsv",
+            header=(
+                "news_id",
+                "category",
+                "subcategory",
+                "title",
+                "abstract",
+                "url",
+                "title_entities",
+                "abstract_entities",
+            ),
+            adapt=sources.mind_articles,
+        ),
+        behaviors=TableSource(
+            files=("train/behaviors.tsv", "dev/behaviors.tsv"),
+            format="tsv",
+            header=("impression_id", "user_id", "time", "history", "impressions"),
+            adapt=sources.mind_behaviors,
+        ),
+        # MIND has no separate history file: it is a column on each impression.
+        history=TableSource(
+            files=("train/behaviors.tsv", "dev/behaviors.tsv"),
+            format="tsv",
+            header=("impression_id", "user_id", "time", "history", "impressions"),
+            adapt=sources.mind_history,
+        ),
     ),
     # news.tsv and behaviors.tsv are headerless; these names are the ones
     # ingest assigns to the positional columns.
@@ -214,6 +290,26 @@ EBNERD = DatasetConfig(
             "embeddings/bert_base_multilingual_cased.parquet",
         ),
         token_env=None,
+    ),
+    sources=SourceSpec(
+        articles=TableSource(
+            files=("articles.parquet",),
+            format="parquet",
+            header=None,
+            adapt=sources.ebnerd_articles,
+        ),
+        behaviors=TableSource(
+            files=("train/behaviors.parquet", "validation/behaviors.parquet"),
+            format="parquet",
+            header=None,
+            adapt=sources.ebnerd_behaviors,
+        ),
+        history=TableSource(
+            files=("train/history.parquet", "validation/history.parquet"),
+            format="parquet",
+            header=None,
+            adapt=sources.ebnerd_history,
+        ),
     ),
     columns=ColumnMap(
         articles={

@@ -13,9 +13,9 @@ dependencies:
   - python=3.12
   - pip
   - pip:
-      - pandas==3.0.5
-      - pyarrow==25.0.0
-      - numpy==2.5.1
+      - pandas==2.3.3
+      - pyarrow==21.0.0
+      - numpy==2.3.5
       - bm25s==0.3.10
       - nltk==3.10.1
       - faiss-cpu==1.15.0

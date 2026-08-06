@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from pipeline import acquire, paths
+from pipeline import acquire, ingest, paths
 from pipeline.datasets import DatasetConfig
 
 
@@ -27,7 +27,7 @@ class Stage:
 
 STAGES = (
     Stage("acquire", "download and extract raw archives", acquire.run),
-    Stage("ingest", "raw files -> unified schema feature store (ticket 3)"),
+    Stage("ingest", "raw files -> unified schema feature store", ingest.run),
     Stage("split", "temporal train/val/test split + leakage guards (ticket 4)"),
     Stage("preprocess", "build lexical_text for the dataset's language (ticket 5)"),
     Stage("bm25", "build BM25 index, report recall@K (ticket 6)"),

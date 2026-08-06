@@ -1,6 +1,6 @@
-# vub-news — lexical & semantic retrieval on MIND and EB-NeRD
+# vub-news
 
-CS4.406 Information Retrieval & Extraction, Assignment 1. Ranks the candidate articles in an
+Ranks the candidate articles in an
 impression by click likelihood, using the user's click history and article content, on two news
 datasets: **MIND-small** (English) and **EB-NeRD small** (Danish).
 
@@ -82,6 +82,8 @@ pipeline/
   datasets.py         the dataset registry — the one place MIND and EB-NeRD differ
   stages.py           pipeline stages in dependency order, plus checkpointing
   acquire.py          download and extract raw archives
+  ingest.py           raw files -> the unified schema, dataset-agnostic
+  sources.py          per-dataset adapters: the only module that knows either shape
   paths.py            filesystem layout
 tests/
 ```
@@ -103,7 +105,7 @@ and `HISTORY_COLUMNS`. Both datasets map onto exactly those columns, and a test 
 
 ## Status
 
-The scaffold, the registry, the checkpointed stage runner and raw data acquisition exist. The
-remaining stages are declared but not yet implemented — `python build.py` reports them as
+The scaffold, the registry, the checkpointed stage runner, raw data acquisition and ingest into the
+unified schema exist. The remaining stages are declared but not yet implemented — `python build.py` reports them as
 `not built` and skips them. They land ticket by ticket; see `../tickets/` for the breakdown and the
 dependency graph.

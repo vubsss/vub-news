@@ -128,16 +128,22 @@ Dataset-specific logic is fully contained in `pipeline/ingest.py`.
 
 ## Temporal Split
 
-Applied to `behaviors.parquet` impression timestamps. Both MIND and EB-NeRD span ~6 weeks.
+Applied to `behaviors.parquet` impression timestamps.
 
 ```
 |── train ──────────────────|── val ──|── test ──|
-              week -4 to -2      week -1    last week
+                                 last two windows
 ```
 
-- **Test:** last 1 week of impressions by `impression_time`
-- **Val:** 1 week immediately before test
+- **Test:** the last `test_days` of impressions by `impression_time`
+- **Val:** the `val_days` immediately before test
 - **Train:** everything before val
+
+The window sizes are a registry field (`SplitSpec`), not a constant. The ~6-week figure this section
+originally assumed belongs to the full releases; the small distributions actually downloaded span one
+week (MIND: 2019-11-09 → 11-15) and two (EB-NeRD: 2023-05-18 → 06-01), where a week each for val and
+test would leave train empty. MIND takes one day each, EB-NeRD three, so train stays the largest
+partition in both. Boundaries land on calendar-day edges.
 
 Split is assigned as a `split` column in `behaviors.parquet`. Never random — strictly time-based.
 Add an assertion in `split.py` that `max(train_time) < min(val_time) < min(test_time)` to guard against leakage.

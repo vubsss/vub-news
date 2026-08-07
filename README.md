@@ -84,6 +84,7 @@ pipeline/
   acquire.py          download and extract raw archives
   ingest.py           raw files -> the unified schema, dataset-agnostic
   sources.py          per-dataset adapters: the only module that knows either shape
+  split.py            temporal train/validation/test split and its leakage guards
   paths.py            filesystem layout
 tests/
 ```
@@ -105,7 +106,7 @@ and `HISTORY_COLUMNS`. Both datasets map onto exactly those columns, and a test 
 
 ## Status
 
-The scaffold, the registry, the checkpointed stage runner, raw data acquisition and ingest into the
-unified schema exist. The remaining stages are declared but not yet implemented — `python build.py` reports them as
+The scaffold, the registry, the checkpointed stage runner, raw data acquisition, ingest into the
+unified schema and the temporal split exist. The remaining stages are declared but not yet implemented — `python build.py` reports them as
 `not built` and skips them. They land ticket by ticket; see `../tickets/` for the breakdown and the
 dependency graph.

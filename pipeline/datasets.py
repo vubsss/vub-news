@@ -130,6 +130,20 @@ class SourceSpec:
 
 
 @dataclass(frozen=True)
+class SplitSpec:
+    """How many days at the end of the log each held-out partition takes.
+
+    SPEC.md asks for a week each, which the ~6-week full releases support. The
+    small distributions shipped here are one week (MIND) and two (EB-NeRD), so
+    a week each would leave train empty; the windows are scaled to the span
+    each dataset actually covers.
+    """
+
+    val_days: int
+    test_days: int
+
+
+@dataclass(frozen=True)
 class EmbeddingSpec:
     # "generate": produced by a notebook on a hosted GPU, fetched as an
     # artifact. "provided": ships with the dataset.
@@ -153,6 +167,7 @@ class DatasetConfig:
     name: str
     language: str
     raw: RawSpec
+    split: SplitSpec
     sources: SourceSpec
     columns: ColumnMap
     embeddings: EmbeddingSpec
@@ -194,6 +209,9 @@ MIND = DatasetConfig(
         ),
         token_env="HF_TOKEN",
     ),
+    # MINDsmall covers one week, so a week each for validation and test would
+    # leave train empty; a day each keeps train the largest partition.
+    split=SplitSpec(val_days=1, test_days=1),
     sources=SourceSpec(
         articles=TableSource(
             files=("train/news.tsv", "dev/news.tsv"),
@@ -291,6 +309,8 @@ EBNERD = DatasetConfig(
         ),
         token_env=None,
     ),
+    # ebnerd_small covers two weeks: three days each, train keeps the rest.
+    split=SplitSpec(val_days=3, test_days=3),
     sources=SourceSpec(
         articles=TableSource(
             files=("articles.parquet",),

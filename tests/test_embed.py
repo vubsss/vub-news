@@ -58,6 +58,21 @@ def test_an_article_with_no_vector_keeps_its_row_and_is_counted():
     assert missing == 1
 
 
+def test_an_article_with_no_abstract_is_encoded_from_its_title_alone():
+    """3,415 of MIND's 65,238 articles have no abstract. The text a vector
+    means is defined here and nowhere else -- the generation notebook imports
+    this rather than reproducing it, because a notebook that drifted would
+    encode something the pipeline does not think it holds."""
+    articles = pd.DataFrame(
+        {
+            "title": pd.Series(["Cats win", "Dr. Who"], dtype="string"),
+            "abstract": pd.Series(["They did", None], dtype="string"),
+        }
+    )
+
+    assert list(embed.document_text(articles)) == ["Cats win. They did", "Dr. Who"]
+
+
 def test_normalise_scales_rows_to_unit_length_and_leaves_zero_rows_alone():
     """A 3-4-5 triangle, so the expectation comes from geometry rather than
     from rerunning the code's own arithmetic. Zero rows are the articles align
@@ -219,9 +234,95 @@ def test_a_reloaded_matrix_holds_the_same_vectors_against_the_same_ids(tree):
     articles = pd.DataFrame({"article_id": pd.Series(["2", "1"], dtype="string")})
     built, _ = embed.build(articles, EBNERD)
 
-    built.save(EBNERD.artifacts_dir)
+    built.save(embed.output_dir(EBNERD))
     reloaded = embed.load(EBNERD)
 
     assert list(reloaded.article_ids) == list(built.article_ids)
     assert reloaded.index == built.index
     np.testing.assert_array_equal(reloaded.vectors, built.vectors)
+
+
+def write_generated(first_values, ids):
+    """MIND's artifact as the notebook uploads it: a matrix at the width the
+    registry declares and, beside it, the ids in encode order, which is not
+    the corpus order."""
+    matrix = np.zeros((len(ids), MIND.embeddings.dim), dtype="float32")
+    matrix[:, 0] = first_values
+    MIND.artifacts_dir.mkdir(parents=True, exist_ok=True)
+    np.save(MIND.artifacts_dir / MIND.embeddings.artifact, matrix)
+    pd.DataFrame({"article_id": pd.Series(ids, dtype="string")}).to_parquet(
+        MIND.artifacts_dir / embed.ID_INDEX, index=False
+    )
+
+
+def write_corpus(config, ids):
+    config.feature_store_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"article_id": pd.Series(ids, dtype="string")}).to_parquet(
+        config.feature_store_dir / "articles.parquet", index=False
+    )
+
+
+def test_saving_leaves_the_downloaded_id_index_where_it_was(tree):
+    """The stage's output is in corpus order and the downloaded index is in
+    the notebook's encode order, and read_source pairs that index positionally
+    with embeddings.npy. Written to one path they would be the same file, so
+    the first run would replace the notebook's ordering with the corpus's while
+    the vectors kept the notebook's -- and the next `--force embed` would hand
+    every article another article's vector, with ensure_artifact declining to
+    re-download because both files are present. Nothing downstream can see
+    that: the scores stay finite, ordered and plausible."""
+    # MIND declares normalise=False, so its source is already unit length.
+    write_generated(first_values=(1.0, 1.0), ids=["n2", "n1"])
+    write_corpus(MIND, ["n1", "n2"])
+
+    built, _ = embed.build(pd.read_parquet(
+        MIND.feature_store_dir / "articles.parquet"), MIND)
+    built.save(embed.output_dir(MIND))
+
+    ids, _ = embed.read_source(MIND)
+    assert list(ids) == ["n2", "n1"]
+
+
+def test_run_writes_the_matrix_and_reports_what_it_holds(tree, capsys):
+    """Ticket 7 asks for dimensionality and article count per dataset. Until
+    run existed there was nowhere for either to be printed."""
+    write_provided(vectors=(vec(3.0, 4.0), vec(0.0, 5.0)), ids=(1, 2))
+    write_corpus(EBNERD, ["2", "1", "absent"])
+
+    embed.run(EBNERD)
+
+    printed = capsys.readouterr().out
+    assert "3 articles" in printed
+    assert str(EBNERD.embeddings.dim) in printed
+    # The third article has no vector; reported, not dropped.
+    assert "1 article(s) have no vector" in printed
+    assert list(embed.load(EBNERD).article_ids) == ["2", "1", "absent"]
+
+
+def test_a_second_run_reuses_the_saved_matrix_instead_of_the_source(tree, capsys):
+    """EB-NeRD's source parquet is 397 MB covering 125,541 articles for a
+    corpus of 20,738. Re-deriving it on every build is the cost the saved
+    matrix exists to avoid, and deleting the source is the only way to assert
+    it is not being read."""
+    source = write_provided(vectors=(vec(3.0, 4.0),), ids=(1,))
+    write_corpus(EBNERD, ["1"])
+    embed.run(EBNERD)
+    source.unlink()
+
+    embed.run(EBNERD)
+
+    assert "loaded from" in capsys.readouterr().out
+    assert embed.load(EBNERD).vectors[0][:2].tolist() == pytest.approx([0.6, 0.8])
+
+
+def test_forcing_the_stage_rederives_the_matrix_it_would_otherwise_reuse(tree):
+    """`build.py --force embed` has to do the work again, or a re-run after a
+    corpus change would quietly keep vectors aligned to the old catalogue."""
+    write_provided(vectors=(vec(3.0, 4.0),), ids=(1,))
+    write_corpus(EBNERD, ["1"])
+    embed.run(EBNERD)
+
+    write_provided(vectors=(vec(0.0, 5.0),), ids=(1,))
+    embed.run(EBNERD, force=True)
+
+    assert embed.load(EBNERD).vectors[0][:2].tolist() == pytest.approx([0.0, 1.0])

@@ -70,6 +70,30 @@ def test_acquisition_failure_exits_non_zero_without_a_traceback(
     assert "Traceback" not in stderr
 
 
+def test_a_missing_embedding_artifact_exits_without_a_traceback(
+    tmp_path, monkeypatch, capsys
+):
+    """The state a fresh clone is in: MIND's vectors are generated on a hosted
+    GPU, so until the notebook has been run and its output uploaded the stage
+    cannot proceed. The message names the two things the user has to do, and a
+    traceback would bury exactly the part they need to read."""
+    monkeypatch.setattr(paths, "FEATURE_STORE_DIR", tmp_path / "feature_store")
+    monkeypatch.setattr(paths, "ARTIFACTS_DIR", tmp_path / "artifacts")
+    monkeypatch.setattr(paths, "CHECKPOINT_DIR", tmp_path / "checkpoints")
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    # Every stage before embed is already done, so the run reaches it.
+    for stage in STAGES:
+        if stage.name == "embed":
+            break
+        stages.mark_done(stage, DATASETS["mind"])
+
+    assert build.main(["--dataset", "mind"]) == 1
+
+    stderr = capsys.readouterr().err
+    assert "gdrive_file_id" in stderr
+    assert "Traceback" not in stderr
+
+
 def test_env_file_supplies_credentials(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "ROOT", tmp_path)
     monkeypatch.delenv("HF_TOKEN", raising=False)

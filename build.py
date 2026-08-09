@@ -20,6 +20,7 @@ import sys
 from pipeline import paths, stages
 from pipeline.acquire import AcquisitionError
 from pipeline.datasets import DATASETS, DatasetConfig
+from pipeline.embed import EmbeddingError
 from pipeline.stages import STAGES, Stage
 
 DONE = "done"
@@ -136,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         run(datasets, forced)
-    except AcquisitionError as error:
+    except (AcquisitionError, EmbeddingError) as error:
         # Something the user has to fix. A traceback would only bury it.
         print(f"\nerror: {error}\n", file=sys.stderr)
         return 1

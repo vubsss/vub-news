@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from pipeline import acquire, bm25_index, ingest, paths, preprocess, split
+from pipeline import acquire, bm25_index, embed, ingest, paths, preprocess, split
 from pipeline.datasets import DatasetConfig
 
 
@@ -37,7 +37,7 @@ STAGES = (
         preprocess.run,
     ),
     Stage("bm25", "build BM25 index, report recall@K", bm25_index.run),
-    Stage("embed", "obtain article embeddings (ticket 7)"),
+    Stage("embed", "obtain article embeddings", embed.run),
     Stage("ann", "build FAISS index, report recall@K (ticket 8)"),
     Stage("evaluate", "ranking and beyond-accuracy metrics (tickets 9, 10)"),
     Stage("predict", "generate CodaBench submission file (tickets 13, 14)"),

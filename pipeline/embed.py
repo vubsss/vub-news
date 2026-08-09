@@ -34,6 +34,13 @@ ID_INDEX = "article_id_index.parquet"
 # downloaded source it was built from.
 VECTORS = "vectors.npy"
 
+# What this stage derives lives in a subdirectory of the dataset's artifacts,
+# as ticket 6's index does. The downloaded source stays at the root, so saving
+# an id index in corpus order can never land on the notebook-ordered one it
+# was built from -- which would pair every MIND vector with another article on
+# the next forced run, and score plausibly while being entirely wrong.
+EMBED_DIR = "embed"
+
 # The notebook that produces the generated artifact, named in the error a user
 # hits when it has not been run yet.
 NOTEBOOK = "notebooks/generate_mind_embeddings.ipynb"
@@ -41,6 +48,29 @@ NOTEBOOK = "notebooks/generate_mind_embeddings.ipynb"
 
 class EmbeddingError(RuntimeError):
     """The embedding artifact does not hold what the pipeline requires of it."""
+
+
+def output_dir(config: DatasetConfig) -> Path:
+    """Where this stage's own files go, apart from any downloaded source."""
+    return config.artifacts_dir / EMBED_DIR
+
+
+def document_text(articles: pd.DataFrame) -> pd.Series:
+    """The text an article is encoded from: its title, then its abstract.
+
+    Not `lexical_text`, which preprocess stripped of stopwords and case for
+    BM25's benefit -- a sentence transformer is trained on running prose and
+    reads the stripped form as a worse sentence. This is the one definition of
+    what the vectors mean; the generation notebook imports it rather than
+    reproducing it, because a notebook that drifts from this line would encode
+    something the pipeline does not think it holds.
+    """
+    title = articles["title"].fillna("").str.strip()
+    abstract = articles["abstract"].fillna("").str.strip()
+    # 3,415 of MIND's 65,238 articles have no abstract. Joining unconditionally
+    # would leave them with a trailing separator, and trimming that back off
+    # would take the full stop off a title that ends in an abbreviation too.
+    return title.where(abstract == "", title + ". " + abstract)
 
 
 def align(
@@ -242,9 +272,39 @@ def ensure_artifact(config: DatasetConfig) -> None:
 
 def load(config: DatasetConfig) -> Embeddings:
     """The aligned, unit-length matrix this stage last wrote."""
-    directory = config.artifacts_dir
+    directory = output_dir(config)
     ids = pd.read_parquet(directory / ID_INDEX)["article_id"]
     return Embeddings(
         vectors=np.load(directory / VECTORS),
         article_ids=ids.astype("string").to_numpy(dtype=object),
     )
+
+
+def run(config: DatasetConfig, force: bool = False) -> None:
+    """Put the dataset's aligned, unit-length matrix on disk, and report it."""
+    directory = output_dir(config)
+    if not force and (directory / VECTORS).exists():
+        embeddings = load(config)
+        print(
+            f"    {len(embeddings.article_ids):,} articles x "
+            f"{embeddings.vectors.shape[1]} dimensions loaded from {directory}"
+        )
+        return
+
+    ensure_artifact(config)
+    articles = pd.read_parquet(config.feature_store_dir / "articles.parquet")
+    embeddings, report = build(articles, config)
+    embeddings.save(directory)
+
+    print(
+        f"    {report['articles']:,} articles x {report['dim']} dimensions "
+        f"from {config.embeddings.model}"
+    )
+    if report["missing"]:
+        # Named rather than summarised: these articles keep a zero row, so they
+        # are never retrieved, and a large count means the artifact and the
+        # corpus disagree about what an article id looks like.
+        print(
+            f"    {report['missing']:,} article(s) have no vector in "
+            f"{config.embeddings.artifact} and keep a zero row"
+        )

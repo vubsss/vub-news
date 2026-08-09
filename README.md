@@ -45,6 +45,27 @@ export HF_TOKEN=hf_...
 
 EB-NeRD downloads from a public S3 bucket and needs no credential.
 
+### MIND article embeddings
+
+EB-NeRD ships precomputed multilingual BERT vectors, which the pipeline reads directly. MIND ships
+none, and this machine has integrated graphics only — so its vectors are generated **once** on a
+free-tier hosted GPU and downloaded as an artifact afterwards, rather than recomputed on every
+machine.
+
+Run `notebooks/generate_mind_embeddings.ipynb` on Colab with a T4 runtime. It clones this repo,
+builds the article corpus with the pipeline's own ingest, encodes it, and copies two files —
+`embeddings.npy` and `article_id_index.parquet` — into a Drive folder. Share that folder as
+*anyone with the link*, then put its id in `pipeline/datasets.py`, on MIND's `EmbeddingSpec`:
+
+```python
+gdrive_file_id="1AbC...xyz",
+```
+
+Until that is set, `python build.py --dataset mind` stops at the embed stage and prints these steps.
+Once it is, the artifact downloads automatically the first time and is used as it stands after that,
+with no further network call. It is a build output, so it is not committed; the notebook that
+produces it is.
+
 ## Rebuild
 
 One command rebuilds everything from raw files:
@@ -87,8 +108,10 @@ pipeline/
   split.py            temporal train/validation/test split and its leakage guards
   preprocess.py       language-parameterised cleaning, for documents and queries alike
   bm25_index.py       BM25 index, click-history queries, recall@K
+  embed.py            article vectors, aligned to the catalogue and unit length
   paths.py            filesystem layout
 tests/
+notebooks/            the MIND embedding generation run, for a hosted GPU
 ```
 
 Generated directories, none of them committed: `data/raw/` (downloads), `feature_store/` (unified
@@ -109,6 +132,7 @@ and `HISTORY_COLUMNS`. Both datasets map onto exactly those columns, and a test 
 ## Status
 
 The scaffold, the registry, the checkpointed stage runner, raw data acquisition, ingest into the
-unified schema, the temporal split, text preprocessing and BM25 lexical retrieval exist. The remaining stages are declared but not yet implemented — `python build.py` reports them as
-`not built` and skips them. They land ticket by ticket; see `../tickets/` for the breakdown and the
-dependency graph.
+unified schema, the temporal split, text preprocessing, BM25 lexical retrieval and article
+embeddings exist. The remaining stages are declared but not yet implemented — `python build.py`
+reports them as `not built` and skips them. They land ticket by ticket; see `../tickets/` for the
+breakdown and the dependency graph.

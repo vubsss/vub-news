@@ -293,7 +293,7 @@ MIND = DatasetConfig(
         model="sentence-transformers/all-MiniLM-L6-v2",
         dim=384,
         artifact="embeddings.npy",
-        gdrive_file_id=None,
+        gdrive_file_id="1tVfeai5eUVvrhRGZdowZQntAwHt2VkQR",
         # embed.encode normalises as it goes, so the uploaded artifact is
         # already unit length. Verified on load rather than redone.
         normalise=False,

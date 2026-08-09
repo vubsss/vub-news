@@ -81,6 +81,18 @@ def test_a_missing_embedding_artifact_exits_without_a_traceback(
     monkeypatch.setattr(paths, "ARTIFACTS_DIR", tmp_path / "artifacts")
     monkeypatch.setattr(paths, "CHECKPOINT_DIR", tmp_path / "checkpoints")
     monkeypatch.setattr(paths, "ROOT", tmp_path)
+    # The absent drive id is constructed, not read from the registry, which
+    # now carries a real one — a test whose premise expires the moment the
+    # project moves on is worse than no test.
+    mind = DATASETS["mind"]
+    monkeypatch.setitem(
+        DATASETS,
+        "mind",
+        dataclasses.replace(
+            mind,
+            embeddings=dataclasses.replace(mind.embeddings, gdrive_file_id=None),
+        ),
+    )
     # Every stage before embed is already done, so the run reaches it.
     for stage in STAGES:
         if stage.name == "embed":

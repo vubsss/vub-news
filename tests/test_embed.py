@@ -1,8 +1,6 @@
 """Embedding artifacts are tested at four seams: align, normalise, load and run."""
 
 import dataclasses
-import sys
-import types
 
 import numpy as np
 import pandas as pd
@@ -204,36 +202,35 @@ def test_build_puts_the_corpus_in_charge_of_rows_and_hands_back_one_interface(tr
 
 
 def test_a_missing_mind_artifact_with_no_drive_id_says_what_to_do(tree):
-    """The state the repo is in until the Colab notebook has been run and its
-    output uploaded. The stage cannot invent the vectors and must not pretend
-    to, so it stops with the two things the user has to do — run the notebook,
-    put the id in the registry — rather than a FileNotFoundError naming a path
-    nobody ever created."""
-    MIND.artifacts_dir.mkdir(parents=True)
+    """The state a fresh clone is in until the Colab notebook has been run and
+    its output uploaded. The stage cannot invent the vectors and must not
+    pretend to, so it stops with the two things the user has to do — run the
+    notebook, put the id in the registry — rather than a FileNotFoundError
+    naming a path nobody ever created.
+
+    The absent id is constructed here rather than read from the registry: the
+    registry now carries a real one, and a test whose premise quietly expires
+    the moment the project moves on is worse than no test.
+    """
+    config = dataclasses.replace(
+        MIND, embeddings=dataclasses.replace(MIND.embeddings, gdrive_file_id=None)
+    )
+    config.artifacts_dir.mkdir(parents=True)
 
     with pytest.raises(embed.EmbeddingError) as failure:
-        embed.ensure_artifact(MIND)
+        embed.ensure_artifact(config)
 
     message = str(failure.value)
     assert embed.NOTEBOOK in message
     assert "gdrive_file_id" in message
 
 
-def test_an_artifact_already_on_disk_is_used_without_touching_the_network(
-    tree, monkeypatch
-):
+def test_an_artifact_already_on_disk_is_used_without_touching_the_network(tree):
     """Ticket 7 asks for the download to happen only when the artifact is
     missing. Re-fetching a 100 MB file on every build would be slow enough to
     notice but not slow enough to investigate, and it would make the pipeline
-    need the network to rebuild something it already has. A gdown that
-    explodes if it is called at all is the only way to assert the negative."""
-    exploding = types.SimpleNamespace(
-        download_folder=lambda **kwargs: pytest.fail(
-            "downloaded an artifact that was already on disk"
-        )
-    )
-    monkeypatch.setitem(sys.modules, "gdown", exploding)
-
+    need the network to rebuild something it already has. The exploding gdown
+    the no_network fixture installs is what asserts that negative."""
     # A drive id is set, so nothing but the files on disk can stop the fetch.
     config = dataclasses.replace(
         MIND,

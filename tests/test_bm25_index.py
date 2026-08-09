@@ -1,11 +1,12 @@
-"""BM25 retrieval is tested at five seams: build_queries, the index's
-build/retrieve pair, recall_at_k, check_within_corpus, and run."""
+"""BM25 retrieval is tested at three seams: build_queries, the index's
+build/retrieve pair, and run. The ranked shape it emits and the recall
+computed over it are shared with the semantic retriever, and tested in
+test_retrieval.py."""
 
-import numpy as np
 import pandas as pd
 import pytest
 
-from pipeline import bm25_index, paths
+from pipeline import bm25_index, paths, retrieval
 from pipeline.datasets import DATASETS
 
 MIND = DATASETS["mind"]
@@ -181,38 +182,6 @@ def ranking(rows):
     )
 
 
-def test_recall_at_k_matches_a_hand_computed_example():
-    """Worked by hand, not recomputed the way the code does it:
-
-    dev-1 clicked a1 and a3 and its ranking is [a3, a1, a9] — 1 of 2 at
-    depth 1, 2 of 2 at depth 2. dev-2 clicked a5 and its ranking is
-    [a9, a5, a7] — 0 of 1 at depth 1, 1 of 1 at depth 2. Averaging the
-    per-impression fractions gives 0.25 and 1.0. dev-3 has no click at all,
-    so its recall is 0/0 and it is counted rather than averaged in as a zero.
-    """
-    truth = behaviors(
-        [
-            ("dev-1", ["a1", "a2", "a3"], [1, 0, 1]),
-            ("dev-2", ["a5", "a7"], [1, 0]),
-            ("dev-3", ["a1"], [0]),
-        ]
-    )
-    ranked = ranking(
-        [
-            ("dev-1", ["a3", "a1", "a9"]),
-            ("dev-2", ["a9", "a5", "a7"]),
-            ("dev-3", ["a1", "a2", "a3"]),
-        ]
-    )
-
-    got = bm25_index.recall_at_k(ranked, truth, depths=(1, 2))
-
-    assert got["recall@1"] == pytest.approx(0.25)
-    assert got["recall@2"] == pytest.approx(1.0)
-    assert got["scored"] == 2
-    assert got["no_positive"] == 1
-
-
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "FEATURE_STORE_DIR", tmp_path / "feature_store")
@@ -276,7 +245,7 @@ def test_run_builds_the_index_and_reports_recall_on_the_validation_split(
     assert (MIND.artifacts_dir / "bm25" / bm25_index.ARTICLE_IDS).exists()
 
     printed = capsys.readouterr().out
-    for depth in bm25_index.DEPTHS:
+    for depth in retrieval.DEPTHS:
         assert f"recall@{depth}" in printed
     # The train impression is not scored: two validation impressions, of which
     # dev-2 has no history at all.
@@ -285,20 +254,6 @@ def test_run_builds_the_index_and_reports_recall_on_the_validation_split(
     # The scale-analysis figures ticket 16 has to cite.
     assert "built in" in printed
     assert "mean query latency" in printed
-
-
-def test_a_retrieved_id_from_outside_the_corpus_is_an_error():
-    """The guard ticket 6 asks to be asserted in code. Retrieval maps bm25s
-    positions back through article_ids, so structurally this cannot happen —
-    but if the corpus and the index are ever built from different frames the
-    symptom is a recall figure that is quietly wrong rather than a crash, and
-    a wrong number that looks fine is the one failure this project cannot
-    afford. The stray id has to be named, so the message points at the frame
-    that disagreed."""
-    ranked = ranking([("dev-1", ["a1", "ghost"]), ("dev-2", ["a2"])])
-
-    with pytest.raises(bm25_index.CorpusError, match="ghost"):
-        bm25_index.check_within_corpus(ranked, np.array(["a1", "a2"], dtype=object))
 
 
 def test_a_second_run_reuses_the_saved_index_instead_of_rebuilding(store, capsys):

@@ -15,11 +15,8 @@ import bm25s
 import numpy as np
 import pandas as pd
 
-from pipeline import preprocess
+from pipeline import preprocess, retrieval
 from pipeline.datasets import DatasetConfig
-
-# The click-history window the query is built from. Swept in ticket 12.
-HISTORY_K = 10
 
 # SPEC's BM25 parameters. Language-agnostic, so they are not registry entries.
 K1, B = 1.5, 0.75
@@ -27,23 +24,12 @@ K1, B = 1.5, 0.75
 # The article ids, saved next to the bm25s index, which does not store them.
 ARTICLE_IDS = "article_ids.npy"
 
-# Retrieval depths reported. Retrieval runs once at the deepest; the shallower
-# figures are prefixes of the same ranking.
-DEPTHS = (50, 100, 200)
-
-# The split retrieval is reported on. Test is held back for the final run.
-VALIDATION = "validation"
-
-
-class CorpusError(RuntimeError):
-    """Retrieval returned an article the corpus does not contain."""
-
 
 def build_queries(
     history: pd.DataFrame,
     articles: pd.DataFrame,
     config: DatasetConfig,
-    history_k: int = HISTORY_K,
+    history_k: int = retrieval.HISTORY_K,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     """One query per impression: the last history_k clicked titles, cleaned.
 
@@ -142,74 +128,11 @@ def build(articles: pd.DataFrame, config: DatasetConfig) -> Index:
     return Index(bm25=bm25, article_ids=articles["article_id"].to_numpy(dtype=object))
 
 
-def recall_at_k(
-    ranked: pd.DataFrame, behaviors: pd.DataFrame, depths: tuple[int, ...]
-) -> dict[str, float]:
-    """Mean per-impression fraction of clicked articles found in the top-K.
-
-    Averaged per impression rather than pooled over all clicks, so every
-    impression counts once whatever its candidate list looks like — which is
-    what makes the cold and warm slices of ticket 10 comparable to each other
-    and to the semantic figures from ticket 8.
-
-    An impression with no clicked article has a recall of 0/0. It is counted
-    and left out of the mean; scoring it as zero would drag every figure down
-    by the share of such impressions rather than by anything retrieval did.
-    """
-    truth = behaviors[["impression_id", "candidate_ids", "labels"]].merge(
-        ranked[["impression_id", "ranked_ids"]], on="impression_id"
-    )
-
-    found: dict[int, list[float]] = {depth: [] for depth in depths}
-    no_positive = 0
-    for _, candidates, labels, ids in truth.itertuples(index=False):
-        clicked = {
-            candidate
-            for candidate, label in zip(candidates, labels, strict=True)
-            if label
-        }
-        if not clicked:
-            no_positive += 1
-            continue
-        for depth in depths:
-            hits = clicked & set(ids[:depth])
-            found[depth].append(len(hits) / len(clicked))
-
-    report: dict[str, float] = {
-        "scored": len(truth) - no_positive,
-        "no_positive": no_positive,
-    }
-    for depth in depths:
-        scores = found[depth]
-        report[f"recall@{depth}"] = sum(scores) / len(scores) if scores else 0.0
-    return report
-
-
 def load(directory: Path) -> Index:
     return Index(
         bm25=bm25s.BM25.load(str(directory), show_progress=False),
         article_ids=np.load(directory / ARTICLE_IDS, allow_pickle=True),
     )
-
-
-def check_within_corpus(ranked: pd.DataFrame, article_ids: np.ndarray) -> None:
-    """No retrieved article may come from outside the corpus.
-
-    Structurally it cannot — retrieved ids are positions into article_ids —
-    but that is exactly the kind of guarantee that quietly stops holding when
-    the corpus and the index are built from different frames, and the symptom
-    would be a recall figure that is wrong rather than an error.
-    """
-    corpus = set(article_ids)
-    seen: set[str] = set()
-    for ids in ranked["ranked_ids"]:
-        seen.update(ids)
-    stray = seen - corpus
-    if stray:
-        raise CorpusError(
-            f"{len(stray)} retrieved article(s) are not in the corpus, "
-            f"e.g. {sorted(stray)[:5]}"
-        )
 
 
 def run(config: DatasetConfig, force: bool = False) -> None:
@@ -229,14 +152,14 @@ def run(config: DatasetConfig, force: bool = False) -> None:
         index = load(directory)
         print(f"    index over {len(articles):,} articles loaded from {directory}")
 
-    validation = behaviors[behaviors["split"] == VALIDATION]
+    validation = behaviors[behaviors["split"] == retrieval.VALIDATION]
     clicks = history[history["impression_id"].isin(set(validation["impression_id"]))]
     queries, asked = build_queries(clicks, articles, config)
 
     started = time.perf_counter()
-    ranked = index.retrieve(queries, depth=max(DEPTHS))
+    ranked = index.retrieve(queries, depth=max(retrieval.DEPTHS))
     latency = 1000 * (time.perf_counter() - started) / max(len(queries), 1)
-    check_within_corpus(ranked, index.article_ids)
+    retrieval.check_within_corpus(ranked, index.article_ids)
 
     total = asked["impressions"]
     cold, empty = asked["cold"], asked["empty_query"]
@@ -252,8 +175,8 @@ def run(config: DatasetConfig, force: bool = False) -> None:
         )
     print(f"    mean query latency {latency:.2f} ms")
 
-    recall = recall_at_k(ranked, validation, DEPTHS)
-    for depth in DEPTHS:
+    recall = retrieval.recall_at_k(ranked, validation, retrieval.DEPTHS)
+    for depth in retrieval.DEPTHS:
         print(f"    recall@{depth:<4} {recall[f'recall@{depth}']:.4f}")
     print(
         f"    over {recall['scored']:,} impressions with a click; "

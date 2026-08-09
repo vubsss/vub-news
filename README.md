@@ -111,6 +111,8 @@ pipeline/
   preprocess.py       language-parameterised cleaning, for documents and queries alike
   bm25_index.py       BM25 index, click-history queries, recall@K
   embed.py            article vectors, aligned to the catalogue and unit length
+  ann_index.py        exact inner-product index, user vectors, recall@K
+  retrieval.py        the ranked shape both retrievers emit, and how it is scored
   paths.py            filesystem layout
 tests/
 notebooks/            the MIND embedding generation run, for a hosted GPU
@@ -134,7 +136,7 @@ and `HISTORY_COLUMNS`. Both datasets map onto exactly those columns, and a test 
 ## Status
 
 The scaffold, the registry, the checkpointed stage runner, raw data acquisition, ingest into the
-unified schema, the temporal split, text preprocessing, BM25 lexical retrieval and article
-embeddings exist. The remaining stages are declared but not yet implemented — `python build.py`
-reports them as `not built` and skips them. They land ticket by ticket; see `../tickets/` for the
-breakdown and the dependency graph.
+unified schema, the temporal split, text preprocessing, BM25 lexical retrieval, article embeddings
+and semantic retrieval exist. The remaining stages are declared but not yet implemented —
+`python build.py` reports them as `not built` and skips them. They land ticket by ticket; see
+`../tickets/` for the breakdown and the dependency graph.

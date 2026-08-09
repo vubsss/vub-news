@@ -11,9 +11,12 @@ numpy==2.3.5
 bm25s==0.3.10
 nltk==3.10.1
 
-# Semantic retrieval
+# Semantic retrieval. torch and transformers are what embed.encode runs on;
+# it only ever runs on a hosted GPU, but they are declared here because the
+# pooling it does is tested locally.
 faiss-cpu==1.15.0
-sentence-transformers==5.6.1
+transformers==5.14.1
+torch==2.13.0
 
 # Metrics
 scikit-learn==1.9.0

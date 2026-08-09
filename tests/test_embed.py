@@ -73,6 +73,28 @@ def test_an_article_with_no_abstract_is_encoded_from_its_title_alone():
     assert list(embed.document_text(articles)) == ["Cats win. They did", "Dr. Who"]
 
 
+def test_mean_pool_averages_only_the_real_tokens():
+    """A batch is padded to its longest text, so pooling over the padding too
+    would shrink a short document's vector by a factor set by whatever got
+    batched beside it -- the same article would embed differently at a
+    different batch boundary, and every vector would still look plausible.
+    Here the padded position holds an absurd value: if the mask were ignored,
+    the first row would come out near (50, 49.5) rather than (1, 0)."""
+    torch = pytest.importorskip("torch")
+    hidden = torch.tensor(
+        [
+            [[1.0, 0.0], [99.0, 99.0]],  # one real token, one padded
+            [[1.0, 0.0], [3.0, 4.0]],  # two real tokens
+        ]
+    )
+    mask = torch.tensor([[1, 0], [1, 1]])
+
+    pooled = embed.mean_pool(hidden, mask)
+
+    assert pooled[0].tolist() == [1.0, 0.0]
+    assert pooled[1].tolist() == [2.0, 2.0]
+
+
 def test_normalise_scales_rows_to_unit_length_and_leaves_zero_rows_alone():
     """A 3-4-5 triangle, so the expectation comes from geometry rather than
     from rerunning the code's own arithmetic. Zero rows are the articles align

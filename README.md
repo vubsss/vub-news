@@ -53,9 +53,11 @@ free-tier hosted GPU and downloaded as an artifact afterwards, rather than recom
 machine.
 
 Run `notebooks/generate_mind_embeddings.ipynb` on Colab with a T4 runtime. It clones this repo,
-builds the article corpus with the pipeline's own ingest, encodes it, and copies two files —
-`embeddings.npy` and `article_id_index.parquet` — into a Drive folder. Share that folder as
-*anyone with the link*, then put its id in `pipeline/datasets.py`, on MIND's `EmbeddingSpec`:
+builds the article corpus with the pipeline's own ingest, encodes it with `embed.encode`, and copies
+two files — `embeddings.npy` and `article_id_index.parquet` — into a Drive folder. It installs
+nothing: Colab already ships `torch` and `transformers`, and pip re-pinning `numpy` under a live
+kernel is what makes hosted notebooks fail. Share that folder as *anyone with the link*, then put
+its id in `pipeline/datasets.py`, on MIND's `EmbeddingSpec`:
 
 ```python
 gdrive_file_id="1AbC...xyz",

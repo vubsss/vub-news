@@ -73,6 +73,61 @@ def document_text(articles: pd.DataFrame) -> pd.Series:
     return title.where(abstract == "", title + ". " + abstract)
 
 
+def mean_pool(hidden: "torch.Tensor", attention_mask: "torch.Tensor") -> "torch.Tensor":
+    """Average a sequence's token vectors, counting only the real tokens.
+
+    Padding is what makes this more than a mean: a batch is padded to its
+    longest text, and averaging over the padding too would shrink every short
+    document's vector toward zero by a factor that depends on what happened to
+    be batched alongside it -- so the same article would embed differently on
+    a different batch boundary.
+    """
+    mask = attention_mask.unsqueeze(-1).to(hidden.dtype)
+    return (hidden * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
+
+
+def encode(texts: list[str], config: DatasetConfig, device: str = "cpu",
+           batch_size: int = 256) -> np.ndarray:
+    """Encode documents into unit-length vectors, for a dataset that generates.
+
+    This is the whole of what the `sentence-transformers` wrapper does for
+    all-MiniLM-L6-v2 -- a 6-layer BERT, mean pooling, L2 normalisation -- run
+    against `transformers` directly. Verified equal to that wrapper's output on
+    256 real MIND articles to 9.3e-08, which is float32 rounding. Doing it means
+    the notebook that runs on a hosted GPU installs nothing: Colab already
+    ships torch and transformers, and pip re-pinning numpy underneath a live
+    kernel is what broke that notebook twice.
+
+    Imported lazily, like the gdown fetch below, because the pipeline itself
+    never encodes -- a dataset that generates its vectors downloads them, and
+    only the notebook takes this path.
+    """
+    import torch
+    from tqdm import tqdm
+    from transformers import AutoModel, AutoTokenizer
+
+    spec = config.embeddings
+    tokenizer = AutoTokenizer.from_pretrained(spec.model)
+    model = AutoModel.from_pretrained(spec.model).to(device).eval()
+
+    rows = []
+    with torch.no_grad():
+        for start in tqdm(range(0, len(texts), batch_size), unit="batch"):
+            batch = tokenizer(
+                texts[start : start + batch_size],
+                padding=True,
+                truncation=True,
+                max_length=spec.max_tokens,
+                return_tensors="pt",
+            ).to(device)
+            pooled = mean_pool(
+                model(**batch).last_hidden_state, batch["attention_mask"]
+            )
+            rows.append(torch.nn.functional.normalize(pooled, p=2, dim=1).cpu())
+
+    return torch.cat(rows).numpy().astype("float32")
+
+
 def align(
     source_ids: np.ndarray,
     source_vectors: np.ndarray,

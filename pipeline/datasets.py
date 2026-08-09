@@ -162,6 +162,12 @@ class EmbeddingSpec:
     # never that non-unit vectors are acceptable, which check_unit_norm
     # rejects for either dataset.
     normalise: bool
+    # Tokens the encoder truncates to, when this dataset generates its own
+    # vectors. A property of the checkpoint rather than a free choice: it is
+    # what all-MiniLM-L6-v2 was trained and published with, and encoding at a
+    # different width would produce vectors that are not the model's. None
+    # when kind == "provided" and nothing here does the encoding.
+    max_tokens: int | None
 
 
 @dataclass(frozen=True)
@@ -288,9 +294,10 @@ MIND = DatasetConfig(
         dim=384,
         artifact="embeddings.npy",
         gdrive_file_id=None,
-        # The notebook encodes with normalize_embeddings=True, so the uploaded
-        # artifact is already unit length. Verified on load rather than redone.
+        # embed.encode normalises as it goes, so the uploaded artifact is
+        # already unit length. Verified on load rather than redone.
         normalise=False,
+        max_tokens=256,
     ),
     submission=SubmissionSpec(
         competition_url="https://www.codabench.org/competitions/13967/",
@@ -389,6 +396,8 @@ EBNERD = DatasetConfig(
         # things and leave magnitude as a free variable in ticket 11's
         # lexical-versus-semantic comparison.
         normalise=True,
+        # Nothing encodes for EB-NeRD; the vectors arrive already made.
+        max_tokens=None,
     ),
     submission=SubmissionSpec(
         competition_url="https://www.codabench.org/competitions/2469/",

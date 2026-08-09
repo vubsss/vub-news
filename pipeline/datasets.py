@@ -150,10 +150,18 @@ class EmbeddingSpec:
     kind: str
     model: str
     dim: int
+    # Where the vectors are read from. Relative to the dataset's raw directory
+    # when kind == "provided", and to its artifacts directory when the
+    # download puts them there.
     artifact: str
     # Drive id of the generated artifact. Filled in by ticket 7; None until
     # the artifact exists, and unused when kind == "provided".
     gdrive_file_id: str | None
+    # Whether the pipeline scales the vectors to unit length itself. False
+    # means the source already emits unit vectors and we only verify it --
+    # never that non-unit vectors are acceptable, which check_unit_norm
+    # rejects for either dataset.
+    normalise: bool
 
 
 @dataclass(frozen=True)
@@ -280,6 +288,9 @@ MIND = DatasetConfig(
         dim=384,
         artifact="embeddings.npy",
         gdrive_file_id=None,
+        # The notebook encodes with normalize_embeddings=True, so the uploaded
+        # artifact is already unit length. Verified on load rather than redone.
+        normalise=False,
     ),
     submission=SubmissionSpec(
         competition_url="https://www.codabench.org/competitions/13967/",
@@ -368,8 +379,16 @@ EBNERD = DatasetConfig(
         kind="provided",
         model="google_bert_base_multilingual_cased",
         dim=768,
-        artifact="embeddings.parquet",
+        artifact="embeddings/bert_base_multilingual_cased.parquet",
         gdrive_file_id=None,
+        # The shipped vectors are raw BERT output with norms around 12.4, not
+        # unit length. Normalised here so an inner product is a cosine, as it
+        # is for MIND: ticket 8 indexes both with faiss IndexFlatIP, and on
+        # unnormalised vectors that ranks by magnitude as much as by direction,
+        # which would make the two datasets' recall figures measure different
+        # things and leave magnitude as a free variable in ticket 11's
+        # lexical-versus-semantic comparison.
+        normalise=True,
     ),
     submission=SubmissionSpec(
         competition_url="https://www.codabench.org/competitions/2469/",

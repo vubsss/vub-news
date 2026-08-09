@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from pipeline import acquire, ingest, paths, preprocess, split
+from pipeline import acquire, bm25_index, ingest, paths, preprocess, split
 from pipeline.datasets import DatasetConfig
 
 
@@ -36,7 +36,7 @@ STAGES = (
         "build lexical_text for the dataset's language",
         preprocess.run,
     ),
-    Stage("bm25", "build BM25 index, report recall@K (ticket 6)"),
+    Stage("bm25", "build BM25 index, report recall@K", bm25_index.run),
     Stage("embed", "obtain article embeddings (ticket 7)"),
     Stage("ann", "build FAISS index, report recall@K (ticket 8)"),
     Stage("evaluate", "ranking and beyond-accuracy metrics (tickets 9, 10)"),

@@ -16,6 +16,7 @@ from pipeline import (
     ann_index,
     bm25_index,
     embed,
+    evaluate,
     ingest,
     paths,
     preprocess,
@@ -48,7 +49,7 @@ STAGES = (
     Stage("bm25", "build BM25 index, report recall@K", bm25_index.run),
     Stage("embed", "obtain article embeddings", embed.run),
     Stage("ann", "build FAISS index, report recall@K", ann_index.run),
-    Stage("evaluate", "ranking and beyond-accuracy metrics (tickets 9, 10)"),
+    Stage("evaluate", "ranking metrics per retriever", evaluate.run),
     Stage("predict", "generate CodaBench submission file (tickets 13, 14)"),
 )
 

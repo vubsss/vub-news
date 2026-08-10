@@ -97,6 +97,37 @@ nothing will mistake for good data.
 pytest
 ```
 
+## Evaluation
+
+`python build.py` scores every retriever on the **validation** split as part of stage 8. Any single
+combination can also be scored on its own:
+
+| Command | Effect |
+|---|---|
+| `python -m pipeline.evaluate` | every retriever on every dataset, validation split |
+| `python -m pipeline.evaluate --dataset mind --retriever bm25` | one combination |
+| `python -m pipeline.evaluate --split test` | the held-back split |
+
+Every run prints the same columns in the same order — dataset, retriever, split, the impression
+counts, then AUC, MRR, nDCG@5 and nDCG@10 — and writes one json per scored run to
+`artifacts/<dataset>/evaluate/<retriever>-<split>.json`, so later analysis aggregates from disk
+rather than re-ranking.
+
+The harness reaches a retriever only through `rank_candidates`, so adding a third one means adding an
+entry to `RETRIEVERS` and nothing else.
+
+Two things it will not do. **It refuses the train split** — metrics on the data a retriever was tuned
+against measure memorisation, and `--split train` fails with that explanation rather than returning
+numbers. And **the build stage never scores test**: a figure regenerated on every rebuild is one that
+gets tuned against, so the held-back split takes a deliberate command.
+
+The counts printed next to the metrics are not decoration. AUC is undefined for an impression with no
+positive candidate, and no ranking metric is defined when every candidate is positive; those
+impressions are counted and left out of the mean rather than averaged in as zeros, which would report
+the share of degenerate impressions rather than anything retrieval did. `all_scores_tied` counts
+impressions the retriever scored flat — their rank metrics read off the order the candidate file
+supplied, not off the retriever.
+
 ## Layout
 
 ```
@@ -113,6 +144,7 @@ pipeline/
   embed.py            article vectors, aligned to the catalogue and unit length
   ann_index.py        exact inner-product index, user vectors, recall@K
   retrieval.py        the ranked shape both retrievers emit, and how it is scored
+  evaluate.py         AUC, MRR, nDCG@5, nDCG@10 over any retriever's ranking
   paths.py            filesystem layout
 tests/
 notebooks/            the MIND embedding generation run, for a hosted GPU
@@ -136,7 +168,7 @@ and `HISTORY_COLUMNS`. Both datasets map onto exactly those columns, and a test 
 ## Status
 
 The scaffold, the registry, the checkpointed stage runner, raw data acquisition, ingest into the
-unified schema, the temporal split, text preprocessing, BM25 lexical retrieval, article embeddings
-and semantic retrieval exist. The remaining stages are declared but not yet implemented —
+unified schema, the temporal split, text preprocessing, BM25 lexical retrieval, article embeddings,
+semantic retrieval and the core ranking metrics exist. The remaining stages are declared but not yet implemented —
 `python build.py` reports them as `not built` and skips them. They land ticket by ticket; see
 `../tickets/` for the breakdown and the dependency graph.

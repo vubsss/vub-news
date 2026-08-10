@@ -228,3 +228,27 @@ def run(config: DatasetConfig, force: bool = False) -> None:
         f"    over {recall['scored']:,} impressions with a click; "
         f"{recall['no_positive']:,} had none and are not averaged in"
     )
+
+
+def rank_candidates(
+    config: DatasetConfig, behaviors: pd.DataFrame, history: pd.DataFrame
+) -> pd.DataFrame:
+    """Score each impression's own candidates. The harness's only entry here.
+
+    bm25_index exposes the same function with the same signature, which is what
+    lets the harness score both retrievers without knowing which it holds.
+    """
+    embeddings = embed.load(config)
+    index = build(embeddings)
+
+    wanted = set(behaviors["impression_id"])
+    clicks = history[history["impression_id"].isin(wanted)]
+    queries, _ = build_user_vectors(clicks, embeddings)
+
+    # Looked up by id rather than zipped: the history frame is filtered from a
+    # larger one and need not arrive in the behaviours frame's order, and a
+    # positional pairing would score each impression against another's
+    # candidates while looking entirely well-formed.
+    candidates_of = dict(zip(behaviors["impression_id"], behaviors["candidate_ids"]))
+    candidates = [candidates_of[i] for i in queries.impression_ids]
+    return index.score_candidates(queries, candidates)

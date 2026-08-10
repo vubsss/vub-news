@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 
 import bm25s
@@ -76,6 +77,12 @@ class Index:
     bm25: bm25s.BM25
     article_ids: np.ndarray
 
+    @cached_property
+    def position(self) -> dict[str, int]:
+        """article id -> corpus position. Built once; scoring a candidate list
+        does one lookup per candidate."""
+        return {article_id: row for row, article_id in enumerate(self.article_ids)}
+
     def save(self, directory: Path) -> None:
         """bm25s stores the term statistics; the article ids are ours to keep,
         and without them its corpus positions mean nothing."""
@@ -104,6 +111,43 @@ class Index:
             for row, i in enumerate(asked):
                 ranked_ids[i] = list(self.article_ids[positions[row]])
                 scores[i] = [float(score) for score in found[row]]
+
+        return pd.DataFrame(
+            {
+                "impression_id": list(queries["impression_id"]),
+                "ranked_ids": ranked_ids,
+                "scores": scores,
+            }
+        )
+
+    def score_candidates(
+        self, queries: pd.DataFrame, candidates: list[list[str]]
+    ) -> pd.DataFrame:
+        """Rank an impression's own candidate list instead of the whole corpus.
+
+        What the evaluation harness scores and what tickets 13 and 14 submit:
+        the candidates are given, and every one of them must come back in an
+        order, so unlike `retrieve` this drops nothing. A candidate outside the
+        corpus scores 0, and an empty query scores every candidate 0 — in both
+        cases the sort is stable, so what comes back is the order it arrived
+        in, which is the honest answer when there is nothing to rank on.
+        """
+        ranked_ids: list[list[str]] = []
+        scores: list[list[float]] = []
+
+        for text, impression in zip(queries["query"], candidates, strict=True):
+            found = np.zeros(len(impression), dtype="float32")
+            if text:
+                rows = np.array(
+                    [self.position.get(candidate, -1) for candidate in impression]
+                )
+                known = rows >= 0
+                if known.any():
+                    corpus = self.bm25.get_scores(text.split())
+                    found[known] = corpus[rows[known]]
+            order = np.argsort(-found, kind="stable")
+            ranked_ids.append([impression[position] for position in order])
+            scores.append([float(found[position]) for position in order])
 
         return pd.DataFrame(
             {
@@ -182,3 +226,27 @@ def run(config: DatasetConfig, force: bool = False) -> None:
         f"    over {recall['scored']:,} impressions with a click; "
         f"{recall['no_positive']:,} had none and are not averaged in"
     )
+
+
+def rank_candidates(
+    config: DatasetConfig, behaviors: pd.DataFrame, history: pd.DataFrame
+) -> pd.DataFrame:
+    """Score each impression's own candidates. The harness's only entry here.
+
+    ann_index exposes the same function with the same signature, which is what
+    lets the harness score both retrievers without knowing which it holds.
+    """
+    articles = pd.read_parquet(config.feature_store_dir / "articles.parquet")
+    index = load(config.artifacts_dir / "bm25")
+
+    wanted = set(behaviors["impression_id"])
+    clicks = history[history["impression_id"].isin(wanted)]
+    queries, _ = build_queries(clicks, articles, config)
+
+    # Looked up by id rather than zipped: the history frame is filtered from a
+    # larger one and need not arrive in the behaviours frame's order, and a
+    # positional pairing would score each impression against another's
+    # candidates while looking entirely well-formed.
+    candidates_of = dict(zip(behaviors["impression_id"], behaviors["candidate_ids"]))
+    candidates = [candidates_of[i] for i in queries["impression_id"]]
+    return index.score_candidates(queries, candidates)

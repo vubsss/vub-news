@@ -107,11 +107,14 @@ combination can also be scored on its own:
 | `python -m pipeline.evaluate` | every retriever on every dataset, validation split |
 | `python -m pipeline.evaluate --dataset mind --retriever bm25` | one combination |
 | `python -m pipeline.evaluate --split test` | the held-back split |
+| `python -m pipeline.evaluate --resamples 100` | fewer bootstrap resamples, for a fast run |
 
-Every run prints the same columns in the same order — dataset, retriever, split, the impression
-counts, then AUC, MRR, nDCG@5 and nDCG@10 — and writes one json per scored run to
-`artifacts/<dataset>/evaluate/<retriever>-<split>.json`, so later analysis aggregates from disk
-rather than re-ranking.
+Every run prints one row per slice per metric, always the same columns in the same order — dataset,
+retriever, split, slice, the slice population, how many impressions the metric was defined on, the
+metric, and its value with a bootstrap interval. The same rows are written to
+`artifacts/<dataset>/evaluate/<retriever>-<split>.json` alongside the run's counts, so later analysis
+aggregates from disk rather than re-ranking. Long rows rather than wide ones: three columns per metric
+would not fit, and this way the columns never change and the table sorts and greps.
 
 The harness reaches a retriever only through `rank_candidates`, so adding a third one means adding an
 entry to `RETRIEVERS` and nothing else.
@@ -121,12 +124,48 @@ against measure memorisation, and `--split train` fails with that explanation ra
 numbers. And **the build stage never scores test**: a figure regenerated on every rebuild is one that
 gets tuned against, so the held-back split takes a deliberate command.
 
-The counts printed next to the metrics are not decoration. AUC is undefined for an impression with no
-positive candidate, and no ranking metric is defined when every candidate is positive; those
-impressions are counted and left out of the mean rather than averaged in as zeros, which would report
-the share of degenerate impressions rather than anything retrieval did. `all_scores_tied` counts
-impressions the retriever scored flat — their rank metrics read off the order the candidate file
-supplied, not off the retriever.
+### What is measured
+
+**Ranking:** AUC, MRR, nDCG@5, nDCG@10 — did the retriever order this impression's candidates well.
+
+**Beyond accuracy**, over the top 10 of each ranked list, because a recommender can order perfectly
+while showing everyone the same handful of popular articles:
+
+- **diversity** — the share of pairs in the shown list drawn from different categories
+- **novelty** — mean self-information of the shown articles, so obscure ones score above obvious ones
+- **coverage** — the fraction of the catalogue the slice ever showed
+
+**Slices:** `overall`, `cold` and `warm` users (fewer / at least 5 clicks in history), and `head` and
+`tail` impressions — placed by whether the articles the user clicked are among the most-shown fifth of
+the articles the split displays. Impressions whose clicks straddle both are in neither, so head and
+tail do not sum to the whole. Every slice is one entry in `SLICES`, a predicate over the
+per-impression frame; adding a sixth is that line and nothing else.
+
+**Intervals:** bootstrap 95% percentiles over 1000 resamples of impressions, seeded, so two runs on
+the same rankings print the same interval. Impressions are the axis because they are what the sample
+is of. Lower `--resamples` while developing, not for a number anyone will quote.
+
+### Reading the output
+
+The counts are not decoration. `population` is how many impressions the slice holds and `n` how many
+of them the metric was defined on — a metric over eleven users has to be visibly a metric over eleven
+users. AUC is undefined for an impression with no positive candidate and no ranking metric is defined
+when every candidate is positive; those are counted in the footer and left out of the mean rather than
+averaged in as zeros, which would report the share of degenerate impressions rather than anything
+retrieval did. `all_scores_tied` counts impressions the retriever scored flat — their rank metrics
+read off the order the candidate file supplied, not off the retriever. Diversity and novelty are still
+recorded for all of them: they describe a list that was shown whether or not it was clicked.
+
+**Coverage is a fraction of the whole catalogue**, not of the articles that happened to be offered as
+candidates, and the footer prints both. It matters: MIND's validation split shows 6144 of its 65238
+articles, so 9.4% is the ceiling any retriever could reach on it. And coverage is the one row whose
+interval is not a bracket around its value — it is a union over the slice rather than a mean over it,
+and a bootstrap resample repeats about 37% of its impressions, so every resample sees fewer distinct
+articles. Read that row's interval as a width and compare coverage between retrievers by value.
+
+Popularity — for novelty and for head/tail — is counted on the split being scored, since these
+numbers describe the population the report is about. Nothing here reaches a retriever, so it is
+description rather than leakage.
 
 ## Layout
 
@@ -144,7 +183,7 @@ pipeline/
   embed.py            article vectors, aligned to the catalogue and unit length
   ann_index.py        exact inner-product index, user vectors, recall@K
   retrieval.py        the ranked shape both retrievers emit, and how it is scored
-  evaluate.py         AUC, MRR, nDCG@5, nDCG@10 over any retriever's ranking
+  evaluate.py         ranking and beyond-accuracy metrics, sliced, with bootstrap intervals
   paths.py            filesystem layout
 tests/
 notebooks/            the MIND embedding generation run, for a hosted GPU
@@ -169,6 +208,7 @@ and `HISTORY_COLUMNS`. Both datasets map onto exactly those columns, and a test 
 
 The scaffold, the registry, the checkpointed stage runner, raw data acquisition, ingest into the
 unified schema, the temporal split, text preprocessing, BM25 lexical retrieval, article embeddings,
-semantic retrieval and the core ranking metrics exist. The remaining stages are declared but not yet implemented —
+semantic retrieval and the full evaluation harness — ranking and beyond-accuracy metrics, population
+slices and bootstrap intervals — exist. The remaining stages are declared but not yet implemented —
 `python build.py` reports them as `not built` and skips them. They land ticket by ticket; see
 `../tickets/` for the breakdown and the dependency graph.

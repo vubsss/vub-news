@@ -167,6 +167,46 @@ Popularity — for novelty and for head/tail — is counted on the split being s
 numbers describe the population the report is about. Nothing here reaches a retriever, so it is
 description rather than leakage.
 
+## Lexical against semantic
+
+The comparison the assignment asks for — which retriever wins, on which dataset, on which slice — is
+generated from the evaluation results already on disk:
+
+```bash
+python -m pipeline.compare
+```
+
+| Command | Effect |
+|---|---|
+| `python -m pipeline.compare` | both datasets, validation split |
+| `python -m pipeline.compare --dataset mind` | one dataset; the cross-dataset section is then omitted |
+| `python -m pipeline.compare --split test` | compare the held-back split, once it has been scored |
+
+It ranks nothing itself. It reads `artifacts/<dataset>/evaluate/<retriever>-<split>.json`, so it
+needs a `python -m pipeline.evaluate` run behind it and costs a second rather than a re-run of both
+retrievers. The output is one markdown document — both retrievers x both datasets x every metric x
+overall plus all four slices, with intervals, then a reading of it — written to
+`artifacts/comparison-<split>.md` and printed. Markdown because it goes into the design note; and
+generated rather than written by hand, because a sentence naming a winner has to change when the
+numbers do.
+
+**A difference is only a difference when the intervals are disjoint.** Where they overlap the table
+says `not established` and the reading says so in words, which is not the same as saying the two are
+equal: the test is conservative, and deliberately so. It is conservative in one further way worth
+knowing — both retrievers rank the same impressions, so a paired test on the per-impression
+differences would separate more than this does. The stored reports carry slice means rather than
+per-impression values, so that test is not available without re-scoring.
+
+Coverage is the one metric compared by value rather than by interval, because its interval is a width
+and not a bracket around its own value (see above). And only the ranking metrics have a better
+direction: for diversity, novelty and coverage the tables say which retriever is *higher* and never
+which one won.
+
+Two reports are refused rather than compared when they disagree about what they measured — different
+impression counts, catalogue, split or resample count. A bm25 report from before a re-ingest against
+a fresh ann one would otherwise produce a difference between two populations wearing the clothes of a
+difference between two retrievers.
+
 ## Layout
 
 ```
@@ -184,6 +224,7 @@ pipeline/
   ann_index.py        exact inner-product index, user vectors, recall@K
   retrieval.py        the ranked shape both retrievers emit, and how it is scored
   evaluate.py         ranking and beyond-accuracy metrics, sliced, with bootstrap intervals
+  compare.py          lexical against semantic, both datasets, from the stored results
   paths.py            filesystem layout
 tests/
 notebooks/            the MIND embedding generation run, for a hosted GPU

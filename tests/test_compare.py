@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from pipeline import compare, evaluate, paths
+from pipeline import compare, evaluate, paths, retrieval
 from pipeline.datasets import DATASETS
 
 MIND, EBNERD = DATASETS["mind"], DATASETS["ebnerd"]
@@ -51,6 +51,7 @@ def report(
         "dataset": dataset,
         "retriever": retriever,
         "split": split,
+        "history_k": retrieval.HISTORY_K,
         "impressions": POPULATION,
         "no_positive": 0,
         "all_positive": 0,

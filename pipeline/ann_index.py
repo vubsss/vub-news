@@ -230,8 +230,39 @@ def run(config: DatasetConfig, force: bool = False) -> None:
     )
 
 
+def retrieve_corpus(
+    config: DatasetConfig,
+    behaviors: pd.DataFrame,
+    history: pd.DataFrame,
+    history_k: int = retrieval.HISTORY_K,
+    depth: int = max(retrieval.DEPTHS),
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Rank the whole catalogue per impression: what recall@K is measured on.
+
+    The other half of the pair below. `rank_candidates` reorders the candidates
+    an impression already carries; this one searches the corpus, which is the
+    only one of the two a retrieval depth means anything to — a candidate list
+    is scored whole. bm25_index exposes this under the same name and signature,
+    so the sweep varies the history window through one call for both retrievers
+    and has no way to hand them different ones.
+    """
+    embeddings = embed.load(config)
+    index = build(embeddings)
+
+    wanted = set(behaviors["impression_id"])
+    clicks = history[history["impression_id"].isin(wanted)]
+    queries, asked = build_user_vectors(clicks, embeddings, history_k)
+
+    ranked = index.retrieve(queries, depth=depth)
+    retrieval.check_within_corpus(ranked, index.article_ids)
+    return ranked, asked
+
+
 def rank_candidates(
-    config: DatasetConfig, behaviors: pd.DataFrame, history: pd.DataFrame
+    config: DatasetConfig,
+    behaviors: pd.DataFrame,
+    history: pd.DataFrame,
+    history_k: int = retrieval.HISTORY_K,
 ) -> pd.DataFrame:
     """Score each impression's own candidates. The harness's only entry here.
 
@@ -243,7 +274,7 @@ def rank_candidates(
 
     wanted = set(behaviors["impression_id"])
     clicks = history[history["impression_id"].isin(wanted)]
-    queries, _ = build_user_vectors(clicks, embeddings)
+    queries, _ = build_user_vectors(clicks, embeddings, history_k)
 
     # Looked up by id rather than zipped: the history frame is filtered from a
     # larger one and need not arrive in the behaviours frame's order, and a

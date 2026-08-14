@@ -207,6 +207,57 @@ impression counts, catalogue, split or resample count. A bm25 report from before
 a fresh ann one would otherwise produce a difference between two populations wearing the clothes of a
 difference between two retrievers.
 
+## The ablation sweep
+
+The experimental grid, and what makes the history-window choice defensible rather than picked:
+
+```bash
+python -m pipeline.sweep
+```
+
+| Command | Effect |
+|---|---|
+| `python -m pipeline.sweep` | the full grid on validation |
+| `python -m pipeline.sweep --quick` | windows 5 and 20 only, 100 resamples — for development |
+| `python -m pipeline.sweep --dataset mind --retriever bm25 --window 5` | restrict any axis (repeatable) |
+| `python -m pipeline.sweep --restart` | discard the stored cells and run them all again |
+| `python -m pipeline.compare --window 20` | rebuild the comparison from that cell of the grid |
+
+**The grid runs as twelve cells, not thirty-six.** The spec's axes are dataset x retriever x history
+window x retrieval depth, but depth and the ranking metrics do not meet: depth belongs to corpus
+retrieval, where recall@K asks how far down you had to look, and the three depths are prefixes of one
+depth-200 search. The ranking metrics come from re-ranking the candidate list an impression already
+carries, which is never truncated, so no depth can move them. Running depth over them would write the
+same AUC into the file three times and invite a reader to average it. Depth is recorded next to every
+recall number and is absent from the ranking metrics, which is where it actually is.
+
+Each cell is one line of `artifacts/sweep-<split>.jsonl` holding its own configuration, its recall at
+each depth, and the evaluation report the harness produced. One line per cell is what makes the sweep
+resumable — a line is written whole or not at all, so an interrupted run leaves no half-finished cell
+and the next run costs only what is left. Runtime is reported both as total grid time and as the time
+this run spent, so a resumed sweep tells the truth about both.
+
+**The window is the axis, so it has to reach both retrievers.** They take it through one parameter of
+one call, and every cell checks the window the retriever reports back against the one it was asked
+for. A test drives the point: with a history whose last five clicks are about a different article
+than its last twenty, a retriever that ignored the window would rank the candidates the other way
+round, and both retrievers are asserted to move.
+
+The best window is chosen on AUC and **only where the intervals are disjoint** — a grid this size
+always has a highest number, and the question is whether it is a finding or the noise floor. Recall
+is reported as a point estimate with no interval, because it comes from the corpus-retrieval path the
+harness's bootstrap does not run over; the document says so rather than leaving a reader to notice a
+missing column.
+
+`python -m pipeline.compare --window K` reads a cell straight out of the grid, so a swept window
+reaches the comparison by being named rather than by anyone copying numbers. It writes
+`comparison-<split>-k<K>.md`, a separate file from the default comparison, because two documents
+holding different numbers must not share a name. Two retrievers swept at different windows are
+refused rather than compared.
+
+The sweep is not a `build.py` stage. It is half an hour of compute whose inputs change only when the
+retrievers do, and a rebuild that ran it every time is a rebuild people stop running.
+
 ## Layout
 
 ```
@@ -225,6 +276,7 @@ pipeline/
   retrieval.py        the ranked shape both retrievers emit, and how it is scored
   evaluate.py         ranking and beyond-accuracy metrics, sliced, with bootstrap intervals
   compare.py          lexical against semantic, both datasets, from the stored results
+  sweep.py            the ablation grid over history windows, resumable, one file out
   paths.py            filesystem layout
 tests/
 notebooks/            the MIND embedding generation run, for a hosted GPU
@@ -249,7 +301,8 @@ and `HISTORY_COLUMNS`. Both datasets map onto exactly those columns, and a test 
 
 The scaffold, the registry, the checkpointed stage runner, raw data acquisition, ingest into the
 unified schema, the temporal split, text preprocessing, BM25 lexical retrieval, article embeddings,
-semantic retrieval and the full evaluation harness — ranking and beyond-accuracy metrics, population
-slices and bootstrap intervals — exist. The remaining stages are declared but not yet implemented —
+semantic retrieval, the full evaluation harness — ranking and beyond-accuracy metrics, population
+slices and bootstrap intervals — the lexical-against-semantic comparison and the ablation sweep
+exist. The remaining stages are declared but not yet implemented —
 `python build.py` reports them as `not built` and skips them. They land ticket by ticket; see
 `../tickets/` for the breakdown and the dependency graph.

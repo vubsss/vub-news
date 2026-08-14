@@ -39,7 +39,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-from pipeline import ann_index, bm25_index, paths
+from pipeline import ann_index, bm25_index, paths, retrieval
 from pipeline.datasets import DATASETS, DatasetConfig
 
 # The retrievers the harness can score. The values are modules, each exposing
@@ -535,8 +535,15 @@ def evaluate(
     retriever: str,
     split: str = VALIDATION,
     resamples: int = BOOTSTRAP_RESAMPLES,
+    history_k: int = retrieval.HISTORY_K,
 ) -> dict:
-    """Score one retriever on one dataset and split, sliced and with intervals."""
+    """Score one retriever on one dataset and split, sliced and with intervals.
+
+    history_k is the click window the retriever builds its query from. It is
+    recorded in the report because two retrievers given different windows are
+    not comparable, and a report that did not carry the window would let that
+    comparison be made without anything noticing — ticket 12 sweeps it.
+    """
     if split == TRAIN:
         raise EvaluationError(
             f"refusing to score the {TRAIN} split. Metrics on data the "
@@ -560,7 +567,9 @@ def evaluate(
     history = pd.read_parquet(store / "history.parquet")
     impressions = behaviors[behaviors["split"] == split]
 
-    ranked = RETRIEVERS[retriever].rank_candidates(config, impressions, history)
+    ranked = RETRIEVERS[retriever].rank_candidates(
+        config, impressions, history, history_k
+    )
     catalogue = catalogue_of(articles, impressions)
     values, shown, population, degenerate = measure(
         paired(ranked, impressions, history), catalogue
@@ -570,6 +579,7 @@ def evaluate(
         "dataset": config.name,
         "retriever": retriever,
         "split": split,
+        "history_k": history_k,
         "impressions": len(impressions),
         **degenerate,
         "catalogue": catalogue.size,

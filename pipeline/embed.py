@@ -325,6 +325,77 @@ def ensure_artifact(config: DatasetConfig) -> None:
         )
 
 
+def for_corpus(
+    articles: pd.DataFrame, config: DatasetConfig, directory: Path
+) -> tuple[Embeddings, dict[str, int]]:
+    """Vectors for a corpus the stored artifact need not cover, cached here.
+
+    `build` aligns the artifact onto whatever corpus it is given and leaves a
+    zero row wherever it holds nothing — correct for the feature store, which
+    the artifact was made from, and useless for the competition's catalogue,
+    which is a later week and which the artifact predates almost entirely. A
+    corpus of zero rows would rank every candidate 0 and submit the candidate
+    file's own order under the name of a semantic retriever.
+
+    So the rows the artifact misses are encoded here, for a dataset the
+    registry says generates its own vectors. One that ships them has nothing
+    to encode with — no checkpoint to call and no token width to call it at —
+    and its artifact covers the whole release anyway, so its misses stay zero
+    and are reported rather than invented.
+
+    Encoding a six-figure catalogue on a CPU is minutes, not seconds, so the
+    result is cached under `directory` and reused whenever the corpus it was
+    built for is the same one, article for article and in the same order.
+    """
+    corpus_ids = articles["article_id"].astype("string").to_numpy(dtype=object)
+    cached = _cached(directory, corpus_ids)
+    if cached is not None:
+        return cached, {"articles": len(corpus_ids), "cached": 1, "encoded": 0}
+
+    spec = config.embeddings
+    source_ids, source_vectors = read_source(config)
+    matrix, missing = align(source_ids, source_vectors, articles["article_id"], spec.dim)
+    if spec.normalise:
+        matrix = normalise(matrix)
+
+    encoded = 0
+    if missing and spec.kind == GENERATE:
+        rows = np.flatnonzero(~matrix.any(axis=1))
+        texts = list(document_text(articles).iloc[rows])
+        matrix[rows] = encode(texts, config)
+        encoded = len(rows)
+
+    check_unit_norm(matrix, config)
+    embeddings = Embeddings(vectors=matrix, article_ids=corpus_ids)
+    embeddings.save(directory)
+    return embeddings, {
+        "articles": len(corpus_ids),
+        "cached": 0,
+        "encoded": encoded,
+        # What the artifact did cover, and — for a dataset that encodes — what
+        # it did not and had to be made here.
+        "from_artifact": len(corpus_ids) - missing,
+        "missing": missing - encoded,
+    }
+
+
+def _cached(directory: Path, corpus_ids: np.ndarray) -> Embeddings | None:
+    """A previous run's matrix, if it was built for exactly this corpus.
+
+    Same ids in the same order or nothing: a matrix is positional, so one
+    built for a catalogue that has since gained an article would pair every
+    row after that article with the wrong one and still load without complaint.
+    """
+    if not (directory / VECTORS).exists() or not (directory / ID_INDEX).exists():
+        return None
+
+    stored = pd.read_parquet(directory / ID_INDEX)["article_id"]
+    stored = stored.astype("string").to_numpy(dtype=object)
+    if len(stored) != len(corpus_ids) or not (stored == corpus_ids).all():
+        return None
+    return Embeddings(vectors=np.load(directory / VECTORS), article_ids=stored)
+
+
 def load(config: DatasetConfig) -> Embeddings:
     """The aligned, unit-length matrix this stage last wrote."""
     directory = output_dir(config)

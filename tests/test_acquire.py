@@ -30,18 +30,18 @@ def test_missing_token_names_the_variable(monkeypatch):
     monkeypatch.delenv(MIND.raw.token_env, raising=False)
 
     with pytest.raises(AcquisitionError, match=MIND.raw.token_env):
-        acquire._token(MIND)
+        acquire._token(MIND, MIND.raw.token_env)
 
 
 def test_blank_token_is_treated_as_missing(monkeypatch):
     monkeypatch.setenv(MIND.raw.token_env, "   ")
 
     with pytest.raises(AcquisitionError, match=MIND.raw.token_env):
-        acquire._token(MIND)
+        acquire._token(MIND, MIND.raw.token_env)
 
 
 def test_public_source_needs_no_token():
-    assert acquire._token(EBNERD) is None
+    assert acquire._token(EBNERD, EBNERD.raw.token_env) is None
 
 
 def test_truncated_archive_is_not_trusted(tmp_path):
@@ -115,15 +115,23 @@ def test_path_escaping_its_target_is_rejected(raw):
     assert not (raw.parent / "escaped.txt").exists()
 
 
-def test_verify_rejects_an_empty_file(raw):
+def test_an_empty_file_is_not_accepted_as_acquired(raw, monkeypatch):
+    """Zero bytes is a download that failed quietly, so the name is reported
+    rather than the file being handed on to ingest as though it held data.
+
+    The fetch is what would ordinarily repair this; stubbing it out is what
+    leaves the check itself as the only thing under test."""
     for name in EBNERD.raw.expected_files:
         target = EBNERD.raw_dir / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("x")
     (EBNERD.raw_dir / EBNERD.raw.expected_files[0]).write_text("")
 
+    monkeypatch.setattr(acquire, "_fetch", lambda *args: None)
+    monkeypatch.setattr(acquire, "_extract", lambda *args: None)
+
     with pytest.raises(AcquisitionError, match=EBNERD.raw.expected_files[0]):
-        acquire._verify(EBNERD)
+        acquire.run(EBNERD)
 
 
 def populate(config):

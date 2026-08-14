@@ -57,12 +57,37 @@ def test_raw_spec_is_usable(config):
     assert len(filenames) == len(set(filenames))
     assert config.raw.expected_files
 
-    for spec in (config.raw, config.embeddings, config.submission):
+    for spec in (config.raw, config.embeddings):
         for field in dataclasses.fields(spec):
             if field.name in INCOMPLETE | CONDITIONAL:
                 continue
             value = getattr(spec, field.name)
             assert value is not None, f"{config.name}: {field.name} is unset"
+
+
+@pytest.mark.parametrize("config", CONFIGS, ids=lambda c: c.name)
+def test_a_submission_spec_is_whole_or_empty(config):
+    """Half a submission spec is worse than none.
+
+    The predict stage reads every field of it in one pass — fetch the archive,
+    parse it, rank it, write the line, name the zip — so one field filled in
+    without the rest is a run that downloads a competition's test set and then
+    discovers it has no format to write the answer in. Ticket 13 filled MIND's
+    in; EB-NeRD's stays at a competition url and nothing else until ticket 14
+    fills all of it.
+    """
+    spec = config.submission
+    # The url is what registration needs and is known before anything is
+    # built; token_env is None wherever the source is public.
+    always = {"competition_url", "token_env"}
+    fields = {f.name for f in dataclasses.fields(spec)} - always
+    filled = {name for name in fields if getattr(spec, name) is not None}
+
+    assert filled in (set(), fields), (
+        f"{config.name}: submission spec is half built — "
+        f"{', '.join(sorted(fields - filled))} still unset"
+    )
+    assert spec.competition_url
 
 
 @pytest.mark.parametrize("config", CONFIGS, ids=lambda c: c.name)

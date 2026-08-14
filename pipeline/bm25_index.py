@@ -281,3 +281,46 @@ def rank_candidates(
     candidates_of = dict(zip(behaviors["impression_id"], behaviors["candidate_ids"]))
     candidates = [candidates_of[i] for i in queries["impression_id"]]
     return index.score_candidates(queries, candidates)
+
+
+@dataclass(frozen=True)
+class Ranker:
+    """Scores a supplied candidate list against a supplied catalogue.
+
+    `rank_candidates` above is the same operation over the feature store; this
+    one is handed the corpus, so the submission path can rank against the
+    competition's own catalogue, which the feature store does not contain.
+    ann_index exposes the same pair of names, and that is all `predict` knows
+    about either retriever.
+    """
+
+    index: Index
+    articles: pd.DataFrame
+    config: DatasetConfig
+    history_k: int
+
+    def rank(self, history: pd.DataFrame, candidates: list[list[str]]) -> pd.DataFrame:
+        queries, _ = build_queries(history, self.articles, self.config, self.history_k)
+        return self.index.score_candidates(queries, candidates)
+
+
+def ranker(
+    articles: pd.DataFrame,
+    config: DatasetConfig,
+    workdir: Path,
+    history_k: int = retrieval.HISTORY_K,
+) -> Ranker:
+    """An index over `articles`, built once and kept under `workdir`.
+
+    Saved rather than rebuilt per run because the caller streams millions of
+    impressions past it and may well be resuming a run that stopped partway.
+    """
+    directory = workdir / "bm25"
+    index = (
+        load(directory) if (directory / ARTICLE_IDS).exists() else build(articles, config)
+    )
+    if not (directory / ARTICLE_IDS).exists():
+        index.save(directory)
+    return Ranker(
+        index=index, articles=articles, config=config, history_k=history_k
+    )

@@ -258,6 +258,82 @@ refused rather than compared.
 The sweep is not a `build.py` stage. It is half an hour of compute whose inputs change only when the
 retrievers do, and a rebuild that ran it every time is a rebuild people stop running.
 
+## CodaBench submission
+
+```bash
+python -m pipeline.predict --dataset mind
+```
+
+Writes `predictions/mind_submission.zip`, ready to upload at
+<https://www.codabench.org/competitions/13967/>. `python build.py` runs the same thing as its last
+stage.
+
+| Command | Effect |
+|---|---|
+| `python -m pipeline.predict` | build every competition's submission that the registry describes |
+| `python -m pipeline.predict --dataset mind` | restrict to one competition (repeatable) |
+| `python -m pipeline.predict --retriever bm25` | rank with the lexical retriever instead of the semantic one |
+| `python -m pipeline.predict --history-k 5` | build the query from a different click window |
+| `python -m pipeline.predict --force` | rebuild even if the archive is already there |
+
+This is **not** the local evaluation task, and the difference decides most of the design:
+
+- **The competition supplies the candidates.** Every impression arrives with its own list and every
+  one of them must come back in an order, so this path calls `rank` and never `retrieve`. No
+  retrieval depth appears anywhere in it — a candidate list is scored whole.
+- **The competition supplies its own catalogue and its own histories.** MIND's open phase is scored
+  against `MINDlarge_test`: 2,370,727 impressions over 120,961 articles from a later week than the
+  `MINDsmall` feature store covers. So the retriever is built over the competition's articles, not
+  the pipeline's, and a user this project has never seen is not a special case — the history the
+  ranking is built from arrives on the impression row.
+- **The embedding artifact only half covers it.** 60,609 of those 120,961 articles have a vector in
+  the artifact ticket 7 generated; the other 60,352 are encoded locally on CPU the first time this
+  runs and cached under `artifacts/mind/predict/`. Left at zero instead, the semantic retriever
+  would score half the catalogue 0 and submit the candidate file's own order under its name.
+
+The 1.46 GB impression file is streamed in chunks of 100,000 — one user vector per impression at 384
+float32 is 3.6 GB before a single candidate is scored — and written in input order, which the
+competition requires.
+
+### What is asserted before the file is written
+
+Every check runs on every impression, not on a sample. The file is written to a `.part` and renamed
+only once all of them have passed, so a run that fails halfway leaves nothing that looks finished.
+
+- The ranking of an impression holds each of its candidates exactly once and adds none of its own.
+- No two candidates claim the same place, which also rejects an input impression that lists the same
+  candidate twice.
+- The retriever returned rankings for the chunk it was given, in that order — they are zipped back
+  on positionally, so a reordering would produce a well-formed file that scores every impression
+  against another one's candidates.
+- The number of lines written equals the number of impressions counted from the raw file itself.
+
+### Leaderboard against local
+
+The competition scores the same four metrics the harness does, so the two sit side by side. They are
+**not** measured on the same thing and are not expected to agree: the local column is 30,269
+`MINDsmall` validation impressions from 50,000 sampled users, the leaderboard column is 2,370,727
+`MINDlarge_test` impressions from a later week over the whole user base.
+
+| Metric | Local — MIND validation, `ann` | CodaBench — Official Test |
+|---|---|---|
+| AUC | 0.6252 [0.6219, 0.6286] | *fill in from the leaderboard* |
+| MRR | 0.3297 [0.3260, 0.3333] | *fill in from the leaderboard* |
+| nDCG@5 | 0.3058 [0.3019, 0.3098] | *fill in from the leaderboard* |
+| nDCG@10 | 0.3642 [0.3606, 0.3680] | *fill in from the leaderboard* |
+
+The last run's own account of what it ranked, which is where a gap would be explained from:
+
+- 2,370,727 impressions, 93,115,001 candidates, ranked in 210 s after a 24-minute one-off encode of
+  the half of the catalogue the artifact did not cover.
+- 29,108 impressions (1.23%) carry no click history and 29,109 (1.23%) scored flat — so all but one
+  flat ranking is a genuinely cold user rather than a catalogue miss, and 98.77% of the leaderboard
+  score is the retriever's own work.
+- 0 articles left without a vector.
+
+Submitting: upload `predictions/mind_submission.zip` under **Participate → Submit**, and save the
+resulting leaderboard entry to `screenshots/mind-leaderboard.png` for the design note.
+
 ## Layout
 
 ```
@@ -277,6 +353,8 @@ pipeline/
   evaluate.py         ranking and beyond-accuracy metrics, sliced, with bootstrap intervals
   compare.py          lexical against semantic, both datasets, from the stored results
   sweep.py            the ablation grid over history windows, resumable, one file out
+  predict.py          the competition's own impressions, ranked and packaged
+  submissions.py      per-competition line formats for the prediction file
   paths.py            filesystem layout
 tests/
 notebooks/            the MIND embedding generation run, for a hosted GPU
@@ -302,7 +380,7 @@ and `HISTORY_COLUMNS`. Both datasets map onto exactly those columns, and a test 
 The scaffold, the registry, the checkpointed stage runner, raw data acquisition, ingest into the
 unified schema, the temporal split, text preprocessing, BM25 lexical retrieval, article embeddings,
 semantic retrieval, the full evaluation harness — ranking and beyond-accuracy metrics, population
-slices and bootstrap intervals — the lexical-against-semantic comparison and the ablation sweep
-exist. The remaining stages are declared but not yet implemented —
-`python build.py` reports them as `not built` and skips them. They land ticket by ticket; see
-`../tickets/` for the breakdown and the dependency graph.
+slices and bootstrap intervals — the lexical-against-semantic comparison, the ablation sweep and the
+MIND CodaBench submission exist. EB-NeRD's submission is the one thing the registry still describes
+as a competition url and nothing else; `python -m pipeline.predict` says so and skips it. It lands
+with ticket 14; see `../tickets/` for the breakdown and the dependency graph.

@@ -24,6 +24,8 @@ def test_stages_are_in_dependency_order():
         ("embed", "ann"),
         ("bm25", "evaluate"),
         ("ann", "evaluate"),
+        ("bm25", "predict"),
+        ("ann", "predict"),
     ]:
         assert order[earlier] < order[later], f"{earlier} must precede {later}"
 
@@ -111,7 +113,7 @@ def test_env_file_supplies_credentials(tmp_path, monkeypatch):
     monkeypatch.delenv("HF_TOKEN", raising=False)
     (tmp_path / ".env").write_text("# comment\n\nHF_TOKEN='from-file'\n")
 
-    build.load_env_file()
+    paths.load_env_file()
 
     assert os.environ["HF_TOKEN"] == "from-file"
 
@@ -121,7 +123,7 @@ def test_exported_variable_beats_the_env_file(tmp_path, monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "from-shell")
     (tmp_path / ".env").write_text("HF_TOKEN=from-file\n")
 
-    build.load_env_file()
+    paths.load_env_file()
 
     assert os.environ["HF_TOKEN"] == "from-shell"
 
@@ -129,7 +131,27 @@ def test_exported_variable_beats_the_env_file(tmp_path, monkeypatch):
 def test_missing_env_file_is_not_an_error(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "ROOT", tmp_path)
 
-    build.load_env_file()
+    paths.load_env_file()
+
+
+def test_a_stage_not_built_for_a_dataset_earns_no_checkpoint(
+    tmp_path, monkeypatch, capsys
+):
+    """EB-NeRD's submission is a competition url and nothing else until ticket
+    14 fills its registry entry in. A checkpoint written for it now would have
+    every rebuild after that ticket lands skip the stage it added."""
+    monkeypatch.setattr(paths, "CHECKPOINT_DIR", tmp_path / "checkpoints")
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    ebnerd = DATASETS["ebnerd"]
+    for stage in STAGES:
+        if stage.name == "predict":
+            break
+        stages.mark_done(stage, ebnerd)
+
+    assert build.main(["--dataset", "ebnerd"]) == 0
+
+    assert "ticket 14" in capsys.readouterr().out
+    assert not stages.is_done(STAGES[-1], ebnerd)
 
 
 def test_unknown_force_target_is_rejected():

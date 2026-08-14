@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import faiss
 import numpy as np
@@ -283,3 +284,45 @@ def rank_candidates(
     candidates_of = dict(zip(behaviors["impression_id"], behaviors["candidate_ids"]))
     candidates = [candidates_of[i] for i in queries.impression_ids]
     return index.score_candidates(queries, candidates)
+
+
+@dataclass(frozen=True)
+class Ranker:
+    """Scores a supplied candidate list against a supplied catalogue.
+
+    `rank_candidates` above is the same operation over the feature store; this
+    one is handed the corpus, so the submission path can rank against the
+    competition's own catalogue, which the feature store does not contain and
+    which the stored embedding artifact does not cover either — embed.for_corpus
+    is what closes that gap. bm25_index exposes the same pair of names, and that
+    is all `predict` knows about either retriever.
+    """
+
+    index: Index
+    embeddings: embed.Embeddings
+    history_k: int
+
+    def rank(self, history: pd.DataFrame, candidates: list[list[str]]) -> pd.DataFrame:
+        queries, _ = build_user_vectors(history, self.embeddings, self.history_k)
+        return self.index.score_candidates(queries, candidates)
+
+
+def ranker(
+    articles: pd.DataFrame,
+    config: DatasetConfig,
+    workdir: Path,
+    history_k: int = retrieval.HISTORY_K,
+) -> Ranker:
+    """Vectors for `articles`, cached under `workdir`, in a flat index."""
+    embeddings, report = embed.for_corpus(articles, config, workdir / embed.EMBED_DIR)
+    if report["cached"]:
+        print(f"    {report['articles']:,} article vectors loaded from {workdir}")
+    else:
+        print(
+            f"    {report['from_artifact']:,} article vectors from the stored "
+            f"artifact, {report['encoded']:,} encoded here, "
+            f"{report['missing']:,} left at zero"
+        )
+    return Ranker(
+        index=build(embeddings), embeddings=embeddings, history_k=history_k
+    )

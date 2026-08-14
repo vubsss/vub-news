@@ -19,6 +19,7 @@ from pipeline import (
     evaluate,
     ingest,
     paths,
+    predict,
     preprocess,
     split,
 )
@@ -50,7 +51,7 @@ STAGES = (
     Stage("embed", "obtain article embeddings", embed.run),
     Stage("ann", "build FAISS index, report recall@K", ann_index.run),
     Stage("evaluate", "ranking metrics per retriever", evaluate.run),
-    Stage("predict", "generate CodaBench submission file (tickets 13, 14)"),
+    Stage("predict", "rank the competition's test impressions", predict.run),
 )
 
 STAGES_BY_NAME = {stage.name: stage for stage in STAGES}

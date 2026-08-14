@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from pipeline import paths, sources
+from pipeline import paths, sources, submissions
 
 # A unified-schema column with no direct source column: the ingest stage
 # (ticket 3) builds it from other source columns.
@@ -172,8 +172,39 @@ class EmbeddingSpec:
 
 @dataclass(frozen=True)
 class SubmissionSpec:
+    """What the competition hands over, and what it will accept back.
+
+    Its test impressions are not the pipeline's test split. The competition
+    supplies the candidate list per impression and expects exactly those
+    ranked, over a period later than the feature store covers, so it ships its
+    own catalogue and its own click histories and is acquired separately from
+    the raw spec above. Everything a leaderboard file's shape depends on lives
+    here; `pipeline/predict.py` reads it and never a dataset name.
+
+    Every field below `competition_url` is None for a competition whose
+    submission is not built yet, and the predict stage says which ticket owns
+    it rather than writing a file the leaderboard would reject.
+    """
+
     competition_url: str
-    filename: str
+    # The archive holding the test impressions, extracted under the dataset's
+    # raw directory exactly as the raw spec's archives are.
+    archives: tuple[Archive, ...] | None = None
+    expected_files: tuple[str, ...] | None = None
+    token_env: str | None = None
+    # The catalogue the candidates are drawn from. Read from the competition's
+    # own files: the pipeline's corpus predates the test period and holds
+    # almost none of the articles that appear as candidates in it.
+    articles: TableSource | None = None
+    # impression_id, user_id, candidate_ids, click_history -- and no labels,
+    # which is what makes this a different adapter from the behaviours one.
+    impressions: TableSource | None = None
+    # The name the leaderboard requires inside the zip, and the zip itself.
+    filename: str | None = None
+    bundle: str | None = None
+    # One impression's 1-based ranks, in the order the competition listed its
+    # candidates, formatted as one line of the prediction file.
+    line: Callable[[str, list[int]], str] | None = None
 
 
 @dataclass(frozen=True)
@@ -301,7 +332,39 @@ MIND = DatasetConfig(
     ),
     submission=SubmissionSpec(
         competition_url="https://www.codabench.org/competitions/13967/",
-        filename="mind_submission.txt",
+        # The only phase still open is Official Test, scored against
+        # MINDlarge_test -- a later week than MINDsmall, and the reason the
+        # submission path indexes the competition's catalogue rather than the
+        # feature store's.
+        archives=(
+            Archive(f"{_HF_MIND}/MINDlarge_test.zip", "MINDlarge_test.zip", "test"),
+        ),
+        expected_files=("test/news.tsv", "test/behaviors.tsv"),
+        token_env="HF_TOKEN",
+        articles=TableSource(
+            files=("test/news.tsv",),
+            format="tsv",
+            header=(
+                "news_id",
+                "category",
+                "subcategory",
+                "title",
+                "abstract",
+                "url",
+                "title_entities",
+                "abstract_entities",
+            ),
+            adapt=sources.mind_articles,
+        ),
+        impressions=TableSource(
+            files=("test/behaviors.tsv",),
+            format="tsv",
+            header=("impression_id", "user_id", "time", "history", "impressions"),
+            adapt=sources.mind_test_impressions,
+        ),
+        filename="prediction.txt",
+        bundle="mind_submission.zip",
+        line=submissions.mind_line,
     ),
 )
 
@@ -399,9 +462,11 @@ EBNERD = DatasetConfig(
         # Nothing encodes for EB-NeRD; the vectors arrive already made.
         max_tokens=None,
     ),
+    # Filled in by ticket 14: the EB-NeRD competition ships a different test
+    # archive and a different line format, and a rejection on one leaderboard
+    # would prove nothing about the other.
     submission=SubmissionSpec(
         competition_url="https://www.codabench.org/competitions/2469/",
-        filename="ebnerd_submission.txt",
     ),
 )
 

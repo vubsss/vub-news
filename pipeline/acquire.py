@@ -33,32 +33,61 @@ class AcquisitionError(RuntimeError):
 
 
 def run(config: DatasetConfig, force: bool = False) -> None:
-    if force or _missing(config):
-        token = _token(config)
-        for archive in config.raw.archives:
-            path = _fetch(archive, config, token)
-            _extract(archive, path, config)
-    else:
+    if not force and not _missing(config):
         print(f"  all raw files for {config.name} are present")
 
-    _verify(config)
+    raw = config.raw
+    ensure(config, raw.archives, raw.expected_files, raw.token_env, force)
+    _report(config)
 
 
-def _token(config: DatasetConfig) -> str | None:
-    """The credential this dataset's source needs, if any."""
-    if config.raw.token_env is None:
+def ensure(
+    config: DatasetConfig,
+    archives: tuple[Archive, ...],
+    expected_files: tuple[str, ...],
+    token_env: str | None,
+    force: bool = False,
+) -> None:
+    """Put one archive set on disk under the dataset's raw directory.
+
+    `run` calls it for the registry's raw spec. The submission stage calls it
+    for the competition's own test archive, which the pipeline never reads and
+    which is far larger than everything the feature store is built from — so
+    it stays off the rebuild path and is fetched only when a leaderboard file
+    is actually being written.
+    """
+    if force or _absent(config, expected_files):
+        token = _token(config, token_env)
+        for archive in archives:
+            _extract(archive, _fetch(archive, config, token), config)
+
+    missing = _absent(config, expected_files)
+    if missing:
+        raise AcquisitionError(
+            f"{config.name}: acquisition finished but these files the registry "
+            f"declares are missing or empty:\n    " + "\n    ".join(missing)
+        )
+
+
+def _absent(config: DatasetConfig, expected_files: tuple[str, ...]) -> list[str]:
+    return [name for name in expected_files if not _present(config.raw_dir / name)]
+
+
+def _token(config: DatasetConfig, token_env: str | None) -> str | None:
+    """The credential a source needs, if any."""
+    if token_env is None:
         return None
 
-    token = os.environ.get(config.raw.token_env, "").strip()
+    token = os.environ.get(token_env, "").strip()
     if not token:
         raise AcquisitionError(
-            f"{config.name}: ${config.raw.token_env} is not set.\n"
+            f"{config.name}: ${token_env} is not set.\n"
             f"  This source is a gated HuggingFace repo. Accept its terms while "
             f"logged in, create a read token, then either write it to the .env "
             f"file in the repo root:\n"
-            f"      echo '{config.raw.token_env}=hf_...' >> .env\n"
+            f"      echo '{token_env}=hf_...' >> .env\n"
             f"  or export it in your shell:\n"
-            f"      export {config.raw.token_env}=hf_..."
+            f"      export {token_env}=hf_..."
         )
     return token
 
@@ -68,11 +97,7 @@ def _archive_dir(config: DatasetConfig) -> Path:
 
 
 def _missing(config: DatasetConfig) -> list[str]:
-    return [
-        name
-        for name in config.raw.expected_files
-        if not _present(config.raw_dir / name)
-    ]
+    return _absent(config, config.raw.expected_files)
 
 
 def _present(path: Path) -> bool:
@@ -199,14 +224,8 @@ def _extract(archive: Archive, path: Path, config: DatasetConfig) -> None:
                 shutil.copyfileobj(source, destination)
 
 
-def _verify(config: DatasetConfig) -> None:
-    missing = _missing(config)
-    if missing:
-        raise AcquisitionError(
-            f"{config.name}: acquisition finished but these files the registry "
-            f"declares are missing or empty:\n    " + "\n    ".join(missing)
-        )
-
+def _report(config: DatasetConfig) -> None:
+    """What the raw spec left on disk, and what it cost to keep."""
     total = 0
     for name in config.raw.expected_files:
         size = (config.raw_dir / name).stat().st_size

@@ -108,3 +108,21 @@ def ebnerd_history(raw: pd.DataFrame) -> pd.DataFrame:
             ),
         }
     )
+
+
+def mind_test_impressions(raw: pd.DataFrame) -> pd.DataFrame:
+    """The competition's test impressions: candidates and history, no labels.
+
+    Deliberately not `mind_behaviors`. That one splits "N3-1" on its trailing
+    label, which the test file does not carry — it would raise on every row —
+    and the history it needs comes from the same file, so one pass produces
+    both rather than joining two adapters back together per chunk.
+    """
+    return pd.DataFrame(
+        {
+            "impression_id": raw["impression_id"].astype(str),
+            "user_id": raw["user_id"].astype(str),
+            "candidate_ids": raw["impressions"].str.split(),
+            "click_history": raw["history"].fillna("").str.split(),
+        }
+    )

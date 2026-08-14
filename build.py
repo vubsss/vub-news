@@ -14,36 +14,18 @@ checkpoint when it finishes, so an interrupted run resumes where it stopped.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 
 from pipeline import paths, stages
 from pipeline.acquire import AcquisitionError
 from pipeline.datasets import DATASETS, DatasetConfig
 from pipeline.embed import EmbeddingError
+from pipeline.predict import NotBuilt
 from pipeline.stages import STAGES, Stage
 
 DONE = "done"
 PENDING = "pending"
 NOT_BUILT = "not built"
-
-
-def load_env_file() -> None:
-    """Read credentials from .env, so they survive across shells.
-
-    An already-exported variable wins, so `HF_TOKEN=... python build.py` still
-    does what it looks like it does.
-    """
-    env_file = paths.ROOT / ".env"
-    if not env_file.exists():
-        return
-
-    for line in env_file.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
 
 
 def status(stage: Stage, dataset: DatasetConfig, forced: set[str]) -> str:
@@ -76,7 +58,14 @@ def run(datasets: list[DatasetConfig], forced: set[str]) -> None:
                 skipped += 1
                 continue
             print(f"  running {stage.name} [{dataset.name}] ...")
-            stage.run(dataset, stage.name in forced)
+            try:
+                stage.run(dataset, stage.name in forced)
+            except NotBuilt as reason:
+                # No checkpoint: the ticket that builds this stage for this
+                # dataset would otherwise land into a rebuild that skips it.
+                print(f"    {reason}")
+                not_built += 1
+                continue
             stages.mark_done(stage, dataset)
             ran += 1
 
@@ -114,7 +103,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    load_env_file()
+    paths.load_env_file()
 
     datasets = [DATASETS[name] for name in (args.dataset or sorted(DATASETS))]
 

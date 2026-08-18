@@ -4,6 +4,7 @@ competition's own impression adapter, the end-to-end write and its zip, and the
 one thing the semantic side needs that the pipeline's stored artifact cannot
 give it — vectors for a catalogue that artifact predates."""
 
+import dataclasses
 import zipfile
 
 import numpy as np
@@ -11,7 +12,7 @@ import pandas as pd
 import pytest
 
 from pipeline import acquire, embed, paths, predict, sources, submissions
-from pipeline.datasets import DATASETS
+from pipeline.datasets import DATASETS, SubmissionSpec
 
 MIND = DATASETS["mind"]
 
@@ -187,13 +188,18 @@ def test_a_short_file_is_not_left_behind_as_a_submission(competition, monkeypatc
 
 
 def test_a_dataset_with_no_submission_built_earns_no_checkpoint():
-    """EB-NeRD's entry is a competition url and nothing else until ticket 14.
+    """A competition described by its url and nothing else — the state both
+    entries were in before their submission ticket landed, and the state a
+    third dataset would be added in.
 
     It has to raise rather than return quietly: `build.py` writes a checkpoint
     for any stage that returns, and one written here would have every later
-    rebuild skip the submission ticket 14 exists to add."""
-    with pytest.raises(predict.NotBuilt, match="ticket 14"):
-        predict.run(DATASETS["ebnerd"])
+    rebuild skip the submission that is still to be built."""
+    unbuilt = dataclasses.replace(
+        MIND, submission=SubmissionSpec(competition_url=MIND.submission.competition_url)
+    )
+    with pytest.raises(predict.NotBuilt, match="archives"):
+        predict.run(unbuilt)
 
 
 def test_the_competitions_catalogue_is_encoded_where_the_artifact_is_empty(
@@ -256,3 +262,188 @@ def test_a_cached_matrix_is_only_reused_for_the_corpus_it_was_built_for(
 
     _, rebuilt = embed.for_corpus(articles.iloc[:2], MIND, directory)
     assert rebuilt["cached"] == 0
+
+
+# --- EB-NeRD: the same five seams, for the competition whose test set ships
+# --- its candidates in parquet and its click histories in a table of their own.
+
+EBNERD = DATASETS["ebnerd"]
+
+DANISH = [
+    (1, "fodboldfinalen spilles i aften", "kampen er udsolgt", "sport"),
+    (2, "opskrift på chokoladekage", "sådan bager du den", "mad"),
+    (3, "aktiemarkedet stiger fortsat", "kurserne steg", "okonomi"),
+]
+
+
+@pytest.fixture
+def ebnerd_competition(tmp_path, monkeypatch):
+    """EB-NeRD's test set on disk, where its registry entry says it lives."""
+    monkeypatch.setattr(paths, "RAW_DIR", tmp_path / "raw")
+    monkeypatch.setattr(paths, "ARTIFACTS_DIR", tmp_path / "artifacts")
+    monkeypatch.setattr(paths, "PREDICTIONS_DIR", tmp_path / "predictions")
+
+    test_dir = EBNERD.raw_dir / "testset" / "test"
+    test_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "article_id": [article for article, _, _, _ in DANISH],
+            "title": [title for _, title, _, _ in DANISH],
+            "subtitle": [subtitle for _, _, subtitle, _ in DANISH],
+            "body": ["" for _ in DANISH],
+            "category_str": [category for _, _, _, category in DANISH],
+            "subcategory": [[10] for _ in DANISH],
+            "published_time": pd.to_datetime(["2023-06-01"] * len(DANISH)),
+        }
+    ).to_parquet(EBNERD.raw_dir / "testset" / "articles.parquet", index=False)
+    # A user who has read about cake, then one the history table never mentions.
+    pd.DataFrame(
+        {
+            "impression_id": [1, 2],
+            "user_id": [11, 22],
+            "impression_time": pd.to_datetime(["2023-06-02 07:00", "2023-06-02 08:00"]),
+            "article_ids_inview": [[1, 2, 3], [3, 1]],
+        }
+    ).to_parquet(test_dir / "behaviors.parquet", index=False)
+    pd.DataFrame(
+        {"user_id": [11], "article_id_fixed": [[2]]}
+    ).to_parquet(test_dir / "history.parquet", index=False)
+    return tmp_path
+
+
+def ebnerd_submitted(tmp_path) -> list[str]:
+    archive = tmp_path / "predictions" / EBNERD.submission.bundle
+    with zipfile.ZipFile(archive) as zipped:
+        assert zipped.namelist() == [EBNERD.submission.filename]
+        return zipped.read(EBNERD.submission.filename).decode().splitlines()
+
+
+def test_the_ebnerd_line_is_what_the_challenges_own_writer_produces():
+    """`write_submission_file` joins the impression id and the bracketed ranks
+    with a single space, over `rank_predictions_by_score` output — 1-based
+    ranks in candidate order. A file of scores would parse and score as
+    nothing."""
+    assert submissions.ebnerd_line("237", [4, 1, 3, 2]) == "237 [4,1,3,2]"
+
+
+def test_ebnerd_test_impressions_parse_without_labels():
+    """The in-view ids arrive as integers and the clicked ids are not there at
+    all — that column is what the leaderboard is holding back."""
+    raw = pd.DataFrame(
+        {
+            "impression_id": [1, 2],
+            "user_id": [11, 22],
+            "impression_time": pd.to_datetime(["2023-06-01", "2023-06-01"]),
+            "article_ids_inview": [[3, 4], [5]],
+        }
+    )
+    parsed = sources.ebnerd_test_impressions(raw)
+    assert list(parsed["candidate_ids"]) == [["3", "4"], ["5"]]
+    assert "click_history" not in parsed
+    assert "labels" not in parsed
+
+
+def test_the_ebnerd_behaviours_adapter_cannot_read_the_test_file():
+    """Why a second adapter exists. The labelled parser reads a column the test
+    file does not have; if it ever stops raising, it does so by inventing
+    labels."""
+    raw = pd.DataFrame(
+        {
+            "impression_id": [1],
+            "user_id": [11],
+            "impression_time": pd.to_datetime(["2023-06-01"]),
+            "article_ids_inview": [[3, 4]],
+        }
+    )
+    with pytest.raises(KeyError):
+        sources.ebnerd_behaviors(raw)
+
+
+def test_the_history_table_is_joined_onto_the_impressions(ebnerd_competition):
+    """EB-NeRD keeps histories in their own file, keyed by user. A user it has
+    no row for is a cold start, not a missing line."""
+    chunks = list(predict.impressions(EBNERD, chunk_size=10))
+
+    assert len(chunks) == 1
+    assert list(chunks[0]["click_history"]) == [["2"], []]
+
+
+def test_only_the_clicks_a_retriever_reads_are_kept(ebnerd_competition):
+    """Both retrievers read `clicks[-history_k:]` and nothing before it. The
+    tail is taken as each chunk of the history table is read, because the whole
+    of EB-NeRD's test histories does not fit in memory alongside the run."""
+    path = EBNERD.raw_dir / "testset" / "test" / "history.parquet"
+    pd.DataFrame(
+        {"user_id": [11], "article_id_fixed": [[1, 2, 3, 1, 2]]}
+    ).to_parquet(path, index=False)
+
+    kept = predict._histories(EBNERD, history_k=3)
+
+    assert kept == {"11": ["3", "1", "2"]}
+
+
+def test_the_ebnerd_submission_ranks_the_candidates_it_was_given(
+    ebnerd_competition, monkeypatch
+):
+    """End to end over the lexical retriever, which needs no artifact.
+
+    User 11's only click is the cake article, so it takes first place among its
+    own candidates and the other two keep the order the file listed them in.
+    User 22 has no history row, scores every candidate 0, and still gets a
+    line."""
+    monkeypatch.setattr(acquire, "_fetch", lambda *args: pytest.fail("downloaded"))
+
+    predict.submit(EBNERD, retriever="bm25")
+
+    assert ebnerd_submitted(ebnerd_competition) == ["1 [2,1,3]", "2 [1,2]"]
+
+
+def test_every_ebnerd_impression_is_written_once_whatever_the_chunking(
+    ebnerd_competition,
+):
+    """The parquet is batched off the file rather than sliced out of a frame
+    read whole, so the row count is a property of the batch size until
+    something asserts otherwise."""
+    predict.submit(EBNERD, retriever="bm25", chunk_size=1)
+
+    assert ebnerd_submitted(ebnerd_competition) == ["1 [2,1,3]", "2 [1,2]"]
+
+
+def test_the_id_the_competition_repeats_on_purpose_is_written_anyway(
+    ebnerd_competition,
+):
+    """EB-NeRD stamps id 0 on all 200,000 of its beyond-accuracy impressions.
+    Refusing them as duplicates would drop the whole diversity half of the
+    leaderboard's task; they are matched by row instead."""
+    pd.DataFrame(
+        {
+            "impression_id": [0, 0, 5],
+            "user_id": [11, 22, 11],
+            "impression_time": pd.to_datetime(["2023-06-02 07:00"] * 3),
+            "article_ids_inview": [[1, 2], [2, 3], [3, 2]],
+        }
+    ).to_parquet(
+        EBNERD.raw_dir / "testset" / "test" / "behaviors.parquet", index=False
+    )
+
+    predict.submit(EBNERD, retriever="bm25")
+
+    assert ebnerd_submitted(ebnerd_competition) == ["0 [2,1]", "0 [1,2]", "5 [2,1]"]
+
+
+def test_an_ordinary_id_is_still_refused_twice(ebnerd_competition):
+    """The exemption is one value wide. Every other id is still a row key, so a
+    reader that handed the same chunk over twice is caught."""
+    pd.DataFrame(
+        {
+            "impression_id": [5, 5],
+            "user_id": [11, 11],
+            "impression_time": pd.to_datetime(["2023-06-02 07:00"] * 2),
+            "article_ids_inview": [[1, 2], [1, 2]],
+        }
+    ).to_parquet(
+        EBNERD.raw_dir / "testset" / "test" / "behaviors.parquet", index=False
+    )
+
+    with pytest.raises(predict.SubmissionError, match="appears twice"):
+        predict.submit(EBNERD, retriever="bm25")

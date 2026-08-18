@@ -72,14 +72,16 @@ def test_a_submission_spec_is_whole_or_empty(config):
     The predict stage reads every field of it in one pass — fetch the archive,
     parse it, rank it, write the line, name the zip — so one field filled in
     without the rest is a run that downloads a competition's test set and then
-    discovers it has no format to write the answer in. Ticket 13 filled MIND's
-    in; EB-NeRD's stays at a competition url and nothing else until ticket 14
-    fills all of it.
+    discovers it has no format to write the answer in. A competition whose
+    submission has not been built yet is a url and nothing else.
     """
     spec = config.submission
-    # The url is what registration needs and is known before anything is
-    # built; token_env is None wherever the source is public.
-    always = {"competition_url", "token_env"}
+    # The url is what registration needs and is known before anything is built.
+    # The rest are None wherever a competition does not have the thing they
+    # describe: a public source needs no token, a competition that puts the
+    # click history on the impression row has no history table, and one whose
+    # impression ids are all distinct repeats none of them.
+    always = {"competition_url", "token_env", "history", "repeated_impression_id"}
     fields = {f.name for f in dataclasses.fields(spec)} - always
     filled = {name for name in fields if getattr(spec, name) is not None}
 

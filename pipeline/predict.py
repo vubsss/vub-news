@@ -13,7 +13,8 @@ the competition's articles rather than the pipeline's: MIND's test period holds
 almost none of the articles MINDsmall does, so an index over the feature store
 would score nearly every candidate 0 and submit the candidate file's own order.
 For the same reason a user this project has never seen is not a special case —
-the history the ranking is built from arrives on the impression row itself.
+the history the ranking is built from arrives with the competition's own files,
+on the impression row or in a table beside it.
 
 Everything a leaderboard file's shape depends on — where the test archive comes
 from, how its files parse, what a line looks like, what the zip is called — is a
@@ -30,18 +31,20 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from pipeline import acquire, evaluate, paths, preprocess, retrieval
 from pipeline.datasets import DATASETS, DatasetConfig, TableSource
 
-# The retriever a submission is generated with unless one is named. Ticket 11
-# separated the two on MIND's validation split by disjoint bootstrap intervals
-# on every ranking metric the leaderboard reports — auc 0.6252 against 0.5597,
-# mrr 0.3297 against 0.2999, ndcg@5 0.3058 against 0.2712, ndcg@10 0.3642
-# against 0.3276, all favouring the semantic side. Submitting the lexical one
-# instead would be submitting the retriever we measured to be worse.
-DEFAULT_RETRIEVER = "ann"
+# The retriever a submission is generated with unless one is named. Of the four
+# the harness can score, only three can be submitted: `fusion` reads a
+# click-count feature and a competition test file ships no clicks, which
+# `fusion.ranker` refuses rather than scoring a column of zeros under the name
+# of the model that was measured. Among the three, `fusion-serving` leads on
+# validation by disjoint intervals on both datasets, and it leads by most on
+# EB-NeRD, where the two content retrievers do not separate from chance.
+DEFAULT_RETRIEVER = "fusion-serving"
 
 # Impressions read, ranked and written at a time. MINDlarge_test holds 2.37M of
 # them; one user vector per impression at 384 float32 is 3.6 GB before a single
@@ -49,6 +52,14 @@ DEFAULT_RETRIEVER = "ann"
 # also the unit the output is written in, and the file is written in input
 # order because the competition requires the rows to keep it.
 CHUNK = 100_000
+
+# Rows of the history table read at a time, where a competition ships one.
+# Smaller than the impression chunk because a row here is a whole reading
+# history rather than one impression: EB-NeRD's test histories average 144
+# clicks over 808k users, so a chunk of this table costs what a chunk of ten
+# times as many impressions does, and all but the last few clicks of it are
+# dropped again immediately.
+HISTORY_CHUNK = 10_000
 
 # Where the submission path's own index and vectors live. Apart from the
 # pipeline's, under artifacts/<dataset>/, because they are built over a
@@ -101,17 +112,69 @@ def catalogue(config: DatasetConfig) -> pd.DataFrame:
     return articles
 
 
-def impressions(config: DatasetConfig, chunk_size: int = CHUNK) -> Iterator[pd.DataFrame]:
+def impressions(
+    config: DatasetConfig,
+    chunk_size: int = CHUNK,
+    history_k: int = retrieval.HISTORY_K,
+    with_history: bool = True,
+) -> Iterator[pd.DataFrame]:
     """The competition's test impressions, in file order, in chunks.
 
     File order is not a convenience: the leaderboard matches predictions to its
     gold labels by row, so a submission whose rows are reordered scores as one
     that ranked at random.
+
+    Each chunk carries the click history its rankings are built from, whether
+    the competition put it on the impression row or in a table of its own —
+    which of the two is a registry field, and the only thing below that knows
+    the difference is whether `spec.history` is there.
+
+    `with_history=False` skips that join. The fusion retriever makes one pass
+    over this file to count how often each article was shown before it ranks
+    anything, and that pass reads candidates and timestamps only — loading
+    808k users' reading histories for it would be several minutes and a
+    gigabyte spent on a column nothing in the pass looks at.
     """
     source = config.submission.impressions
+    clicks = _histories(config, history_k) if with_history else None
     for name in source.files:
         for raw in _read(config, source, name, chunk_size):
-            yield source.adapt(raw)
+            chunk = source.adapt(raw)
+            if clicks is not None:
+                chunk["click_history"] = [
+                    clicks.get(user_id, []) for user_id in chunk["user_id"]
+                ]
+            yield chunk
+
+
+def _histories(
+    config: DatasetConfig, history_k: int
+) -> dict[str, list[str]] | None:
+    """Every user's last history_k clicks, for a competition that ships them
+    apart from the impressions. None when the impression row carries its own.
+
+    Two things keep this inside a machine's memory rather than several times
+    over. EB-NeRD's test table is 808k users averaging 144 clicks each, and
+    both retrievers read only `[-k:]` of one — so the tail is taken as each
+    chunk arrives and the rest is dropped before the next chunk is read, which
+    is 116M ids read and 8M kept. And the ids that survive are interned against
+    the 126k articles that exist, so a click on a popular article costs a
+    pointer rather than another copy of its id.
+    """
+    source = config.submission.history
+    if source is None:
+        return None
+
+    kept: dict[str, list[str]] = {}
+    unique: dict[str, str] = {}
+    for name in source.files:
+        for raw in _read(config, source, name, HISTORY_CHUNK):
+            rows = source.adapt(raw)
+            for user_id, clicks in zip(rows["user_id"], rows["click_history"]):
+                kept[user_id] = [
+                    unique.setdefault(click, click) for click in clicks[-history_k:]
+                ]
+    return kept
 
 
 def _read(
@@ -133,13 +196,17 @@ def _read(
             quoting=csv.QUOTE_NONE,
             chunksize=chunk_size,
         )
-    else:
+    elif chunk_size is None:
         frame = pd.read_parquet(path)
-        if chunk_size is not None:
-            return (
-                frame.iloc[start : start + chunk_size]
-                for start in range(0, len(frame), chunk_size)
-            )
+    else:
+        # Batched off the file rather than sliced out of a frame that was read
+        # whole: EB-NeRD's test behaviours are millions of rows of list-typed
+        # columns, and reading them all to hand back a hundred thousand at a
+        # time would put the thing chunking exists to avoid in memory first.
+        return (
+            batch.to_pandas()
+            for batch in pq.ParquetFile(path).iter_batches(batch_size=chunk_size)
+        )
     return frame
 
 
@@ -157,7 +224,11 @@ def source_rows(config: DatasetConfig) -> int:
         if source.format == "tsv":
             total += _lines(path)
         else:
-            total += len(pd.read_parquet(path, columns=[]))
+            # Out of the footer rather than out of a read: a parquet file
+            # records its own row count, and asking pandas for no columns hands
+            # back a frame with no rows either, which would make this guard
+            # certain that every competition sent nothing.
+            total += pq.ParquetFile(path).metadata.num_rows
     return total
 
 
@@ -234,12 +305,12 @@ def write(
 
     expected = source_rows(config)
     seen: set[str] = set()
-    report = {"impressions": 0, "cold": 0, "flat": 0, "candidates": 0}
+    report = {"impressions": 0, "cold": 0, "flat": 0, "candidates": 0, "repeated": 0}
     started = time.perf_counter()
 
     with partial.open("w", encoding="utf-8") as handle:
         progress = tqdm(total=expected, unit="impression", desc="    ranking")
-        for chunk in impressions(config, chunk_size):
+        for chunk in impressions(config, chunk_size, history_k):
             candidates = list(chunk["candidate_ids"])
             ranked = rank_with.rank(chunk, candidates)
             _check_alignment(chunk, ranked)
@@ -248,12 +319,15 @@ def write(
                 chunk["impression_id"], candidates, ranked["ranked_ids"],
                 ranked["scores"], strict=True,
             ):
-                if impression_id in seen:
+                if impression_id == spec.repeated_impression_id:
+                    report["repeated"] += 1
+                elif impression_id in seen:
                     raise SubmissionError(
                         f"impression {impression_id} appears twice in "
                         f"{spec.impressions.files}"
                     )
-                seen.add(impression_id)
+                else:
+                    seen.add(impression_id)
                 handle.write(spec.line(impression_id, ranks(given, order)) + "\n")
                 report["candidates"] += len(given)
                 # A ranking whose scores are all equal is the candidate file's
@@ -311,7 +385,7 @@ def run(config: DatasetConfig, force: bool = False) -> None:
     if unbuilt:
         raise NotBuilt(
             f"{config.name}: no submission built yet — its registry entry has "
-            f"no {unbuilt} (ticket 14)"
+            f"no {unbuilt}"
         )
 
     submit(config, force=force)
@@ -346,6 +420,11 @@ def submit(
         f"({100 * report['flat'] / total if total else 0:.2f}%) scored flat and "
         f"keep the order the competition listed them in"
     )
+    if report["repeated"]:
+        print(
+            f"    {report['repeated']:,} carry the competition's repeated id "
+            f"{spec.repeated_impression_id!r} and are matched by row, not by id"
+        )
     print(f"    {archive} -> upload at {spec.competition_url}")
     return archive
 
@@ -392,7 +471,7 @@ def main(argv: list[str] | None = None) -> int:
         if unbuilt:
             print(
                 f"  {name}: no submission built yet — its registry entry has "
-                f"no {unbuilt} (ticket 14)"
+                f"no {unbuilt}"
             )
             continue
         print(f"  {name}")

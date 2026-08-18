@@ -117,12 +117,39 @@ def mind_test_impressions(raw: pd.DataFrame) -> pd.DataFrame:
     label, which the test file does not carry — it would raise on every row —
     and the history it needs comes from the same file, so one pass produces
     both rather than joining two adapters back together per chunk.
+
+    The timestamp comes through because the fusion retriever's popularity
+    features are read at it. The two content retrievers never look at it, and
+    carrying a column one of three consumers wants is cheaper than a second
+    adapter over the same file.
     """
     return pd.DataFrame(
         {
             "impression_id": raw["impression_id"].astype(str),
             "user_id": raw["user_id"].astype(str),
+            "impression_time": pd.to_datetime(raw["time"], format="%m/%d/%Y %I:%M:%S %p"),
             "candidate_ids": raw["impressions"].str.split(),
             "click_history": raw["history"].fillna("").str.split(),
+        }
+    )
+
+
+def ebnerd_test_impressions(raw: pd.DataFrame) -> pd.DataFrame:
+    """The competition's test impressions: candidates, and no labels.
+
+    Deliberately not `ebnerd_behaviors`: that one reads `article_ids_clicked`
+    to build the label vector, and the test file does not carry the column --
+    it is what the leaderboard is holding back. No history here either, unlike
+    MIND's test adapter, because EB-NeRD ships it as a separate table that the
+    submission spec names and `predict` joins on.
+    """
+    return pd.DataFrame(
+        {
+            "impression_id": raw["impression_id"].astype(str),
+            "user_id": raw["user_id"].astype(str),
+            "impression_time": pd.to_datetime(raw["impression_time"]),
+            "candidate_ids": raw["article_ids_inview"].map(
+                lambda ids: [str(i) for i in ids]
+            ),
         }
     )

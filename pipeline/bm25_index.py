@@ -158,6 +158,153 @@ class Index:
         )
 
 
+    @cached_property
+    def by_document(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The index transposed: per document, its terms and their BM25 weights.
+
+        bm25s stores the index the way retrieval wants it — a posting list per
+        term — and `get_scores` walks those lists to score the entire corpus.
+        That is the right shape for "which documents match this query" and the
+        wrong one for "what does this query score against these fifteen
+        documents", which is the only question `score_pairs` asks. Answering it
+        off the term lists costs the length of every posting list the query
+        touches; answering it off this one costs the number of distinct terms in
+        the fifteen documents.
+
+        The difference is not an optimisation, it is what makes the feature
+        exist at all: scoring EB-NeRD's 13.5M competition impressions against a
+        125k-article corpus through `get_scores` is on the order of a day.
+
+        Built once per index and cached, because the transpose costs a sort of
+        300k entries and the caller does this millions of times.
+        """
+        weights = self.bm25.scores["data"]
+        # CSC over terms: indptr is one entry per term, indices the document
+        # each weight belongs to. Regrouping it by document is a sort of the
+        # documents and reading the term off the column each entry came from.
+        documents = self.bm25.scores["indices"]
+        column = self.bm25.scores["indptr"]
+        term = np.repeat(
+            np.arange(len(column) - 1, dtype="int32"), np.diff(column)
+        )
+        order = np.argsort(documents, kind="stable")
+        boundaries = np.searchsorted(
+            documents[order], np.arange(self.bm25.scores["num_docs"] + 1)
+        )
+        return term[order].astype("int32"), weights[order], boundaries
+
+    def score_pairs(
+        self, queries: list[list[str]], candidates: list[list[str]], batch: int = 200_000
+    ) -> np.ndarray:
+        """BM25 of each query against its own candidates, concatenated.
+
+        Identical arithmetic to `score_candidates` — same weights, summed over
+        the same terms — read out of the transpose above rather than out of a
+        corpus-wide score vector. A term repeated in the query counts as many
+        times as it appears, which is what `get_scores` does and what makes the
+        two agree to the last bit rather than approximately. A candidate outside
+        the corpus, and a query with no term the index knows, both score 0.
+
+        Written without a Python loop over pairs because the submission path
+        calls it on 206 million of them. Each candidate's term block is
+        expanded, every (impression, term) pair is looked up in the query table
+        by one sorted search, and the products are summed back per candidate by
+        `bincount` — three vectorised passes over the expansion rather than one
+        interpreted step per candidate.
+
+        Returned flat, in the order the candidate lists were given, because the
+        caller holds a per-candidate frame in exactly that order.
+        """
+        terms, weights, boundaries = self.by_document
+        vocabulary = self.bm25.vocab_dict
+        position = self.position
+        vocabulary_size = len(vocabulary)
+
+        widths = np.fromiter((len(c) for c in candidates), dtype="int64", count=len(candidates))
+        rows = np.fromiter(
+            (position.get(candidate, -1) for impression in candidates for candidate in impression),
+            dtype="int64",
+            count=int(widths.sum()),
+        )
+        impression_of = np.repeat(np.arange(len(candidates), dtype="int64"), widths)
+
+        # The query side as one sorted table of (impression * vocabulary + term)
+        # -> how many times the term occurs in that impression's query. One key
+        # space for both halves is what turns the lookup into a searchsorted.
+        keys: list[np.ndarray] = []
+        counts: list[np.ndarray] = []
+        for i, query in enumerate(queries):
+            asked = [vocabulary[token] for token in query if token in vocabulary]
+            if not asked:
+                continue
+            token, count = np.unique(np.asarray(asked, dtype="int64"), return_counts=True)
+            keys.append(i * vocabulary_size + token)
+            counts.append(count.astype("float32"))
+        if keys:
+            query_keys = np.concatenate(keys)
+            query_counts = np.concatenate(counts)
+            order = np.argsort(query_keys, kind="stable")
+            query_keys, query_counts = query_keys[order], query_counts[order]
+        else:
+            query_keys = np.empty(0, dtype="int64")
+            query_counts = np.empty(0, dtype="float32")
+
+        scores = np.zeros(len(rows), dtype="float32")
+        for start in range(0, len(rows), batch):
+            block = slice(start, min(start + batch, len(rows)))
+            scores[block] = self._score_block(
+                rows[block],
+                impression_of[block],
+                query_keys,
+                query_counts,
+                vocabulary_size,
+                terms,
+                weights,
+                boundaries,
+            )
+        return scores
+
+    @staticmethod
+    def _score_block(
+        rows: np.ndarray,
+        impression_of: np.ndarray,
+        query_keys: np.ndarray,
+        query_counts: np.ndarray,
+        vocabulary_size: int,
+        terms: np.ndarray,
+        weights: np.ndarray,
+        boundaries: np.ndarray,
+    ) -> np.ndarray:
+        """One batch of candidates, expanded into term entries and summed back."""
+        known = rows >= 0
+        starts = np.where(known, boundaries[np.maximum(rows, 0)], 0)
+        lengths = np.where(known, boundaries[np.maximum(rows, 0) + 1] - starts, 0)
+        total = int(lengths.sum())
+        if total == 0:
+            return np.zeros(len(rows), dtype="float32")
+
+        # The ragged concatenation of every candidate's entries, built by
+        # offsetting a flat arange rather than by concatenating per candidate.
+        candidate_of = np.repeat(np.arange(len(rows), dtype="int64"), lengths)
+        offsets = np.cumsum(lengths) - lengths
+        entry = (
+            np.arange(total, dtype="int64")
+            - np.repeat(offsets, lengths)
+            + np.repeat(starts, lengths)
+        )
+
+        wanted = impression_of[candidate_of] * vocabulary_size + terms[entry]
+        found = np.searchsorted(query_keys, wanted)
+        matched = (found < len(query_keys)) & (
+            query_keys[np.minimum(found, max(len(query_keys) - 1, 0))] == wanted
+        )
+        multiplicity = np.where(matched, query_counts[np.minimum(found, max(len(query_keys) - 1, 0))], 0.0)
+
+        return np.bincount(
+            candidate_of, weights=multiplicity * weights[entry], minlength=len(rows)
+        ).astype("float32")
+
+
 def build(articles: pd.DataFrame, config: DatasetConfig) -> Index:
     """Index the catalogue's lexical_text, which preprocess already cleaned.
 

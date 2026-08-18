@@ -18,3 +18,19 @@ def mind_line(impression_id: str, ranks: list[int]) -> str:
     and would score as though every impression had been ranked at random.
     """
     return f"{impression_id} [{','.join(str(rank) for rank in ranks)}]"
+
+
+def ebnerd_line(impression_id: str, ranks: list[int]) -> str:
+    """`237 [4,1,3,2]` -- the same shape MIND's leaderboard reads.
+
+    Not a guess from the resemblance: it is what the challenge's own
+    `ebrec.utils._python.write_submission_file` writes, which joins the
+    impression id and `"[" + ",".join(...) + "]"` with a space, over the output
+    of `rank_predictions_by_score` -- 1-based ranks in candidate order, not
+    scores and not the reordered ids.
+
+    Kept as its own function rather than pointing the registry at `mind_line`,
+    because the two competitions agreeing today is a coincidence of format: one
+    of them changing must not silently change the file the other submits.
+    """
+    return f"{impression_id} [{','.join(str(rank) for rank in ranks)}]"

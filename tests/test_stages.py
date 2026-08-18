@@ -3,7 +3,7 @@ import os
 
 import build
 from pipeline import paths, stages
-from pipeline.datasets import DATASETS
+from pipeline.datasets import DATASETS, SubmissionSpec
 from pipeline.stages import STAGES
 
 
@@ -137,12 +137,19 @@ def test_missing_env_file_is_not_an_error(tmp_path, monkeypatch):
 def test_a_stage_not_built_for_a_dataset_earns_no_checkpoint(
     tmp_path, monkeypatch, capsys
 ):
-    """EB-NeRD's submission is a competition url and nothing else until ticket
-    14 fills its registry entry in. A checkpoint written for it now would have
-    every rebuild after that ticket lands skip the stage it added."""
+    """A competition whose submission is a url and nothing else — which both
+    of them were before their submission ticket landed, and which a third
+    dataset would be added as. A checkpoint written for it would have every
+    rebuild after that ticket skip the stage the ticket added."""
     monkeypatch.setattr(paths, "CHECKPOINT_DIR", tmp_path / "checkpoints")
     monkeypatch.setattr(paths, "ROOT", tmp_path)
-    ebnerd = DATASETS["ebnerd"]
+    ebnerd = dataclasses.replace(
+        DATASETS["ebnerd"],
+        submission=SubmissionSpec(
+            competition_url=DATASETS["ebnerd"].submission.competition_url
+        ),
+    )
+    monkeypatch.setitem(DATASETS, "ebnerd", ebnerd)
     for stage in STAGES:
         if stage.name == "predict":
             break
@@ -150,7 +157,7 @@ def test_a_stage_not_built_for_a_dataset_earns_no_checkpoint(
 
     assert build.main(["--dataset", "ebnerd"]) == 0
 
-    assert "ticket 14" in capsys.readouterr().out
+    assert "no submission built yet" in capsys.readouterr().out
     assert not stages.is_done(STAGES[-1], ebnerd)
 
 

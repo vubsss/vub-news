@@ -89,7 +89,8 @@ run resumes where it stopped rather than redoing completed work. A forced stage 
 if its outputs are already on disk.
 
 Downloaded archives are kept under `data/raw/<dataset>/_archives/` (445 MB for EB-NeRD, 100 MB for
-MIND), so a re-download is never needed. An archive is opened before it is trusted, so a truncated
+MIND, plus 1.63 GB and 605 MB of competition test set that only the submission stage fetches), so a
+re-download is never needed. An archive is opened before it is trusted, so a truncated
 one is re-fetched rather than extracted, and an interrupted download leaves only a `.part` file that
 nothing will mistake for good data.
 
@@ -262,10 +263,12 @@ retrievers do, and a rebuild that ran it every time is a rebuild people stop run
 
 ```bash
 python -m pipeline.predict --dataset mind
+python -m pipeline.predict --dataset ebnerd
 ```
 
-Writes `predictions/mind_submission.zip`, ready to upload at
-<https://www.codabench.org/competitions/13967/>. `python build.py` runs the same thing as its last
+Writes `predictions/mind_submission.zip` and `predictions/ebnerd_submission.zip`, ready to upload at
+<https://www.codabench.org/competitions/13967/> and
+<https://www.codabench.org/competitions/2469/>. `python build.py` runs the same thing as its last
 stage.
 
 | Command | Effect |
@@ -283,17 +286,46 @@ This is **not** the local evaluation task, and the difference decides most of th
   retrieval depth appears anywhere in it — a candidate list is scored whole.
 - **The competition supplies its own catalogue and its own histories.** MIND's open phase is scored
   against `MINDlarge_test`: 2,370,727 impressions over 120,961 articles from a later week than the
-  `MINDsmall` feature store covers. So the retriever is built over the competition's articles, not
-  the pipeline's, and a user this project has never seen is not a special case — the history the
-  ranking is built from arrives on the impression row.
-- **The embedding artifact only half covers it.** 60,609 of those 120,961 articles have a vector in
-  the artifact ticket 7 generated; the other 60,352 are encoded locally on CPU the first time this
-  runs and cached under `artifacts/mind/predict/`. Left at zero instead, the semantic retriever
-  would score half the catalogue 0 and submit the candidate file's own order under its name.
+  `MINDsmall` feature store covers. EB-NeRD's is scored against `ebnerd_testset`: 13,536,710
+  impressions over 125,541 articles, with 807,677 users' reading histories in a table of their own.
+  So the retriever is built over the competition's articles, not the pipeline's, and a user this
+  project has never seen is not a special case — the history the ranking is built from arrives with
+  the competition's files, on the impression row for MIND and in that table for EB-NeRD.
+- **The embedding artifact covers one of the two catalogues.** 60,609 of MIND's 120,961 competition
+  articles have a vector in the artifact ticket 7 generated; the other 60,352 are encoded locally on
+  CPU the first time this runs and cached under `artifacts/mind/predict/`. Left at zero instead, the
+  semantic retriever would score half the catalogue 0 and submit the candidate file's own order
+  under its name. EB-NeRD needs none of that: the vectors that ship with the dataset cover all
+  125,541 of its competition articles exactly, so nothing is encoded and no row is left at zero.
 
-The 1.46 GB impression file is streamed in chunks of 100,000 — one user vector per impression at 384
-float32 is 3.6 GB before a single candidate is scored — and written in input order, which the
-competition requires.
+Both impression files are streamed in chunks of 100,000 — one user vector per impression at 384
+float32 is 3.6 GB for MIND before a single candidate is scored — and written in input order, which
+the competitions require. EB-NeRD's history table is read in chunks too, and only the last
+`--history-k` clicks of each user are kept: it holds 116M clicks, of which the retrievers read 8M.
+
+### What each competition asks for
+
+Recorded here so a regeneration does not have to rediscover it. Both CodaBench pages render their
+terms client-side, so neither can be quoted from a fetch; EB-NeRD's format below is read off the
+challenge's own `ebrec.utils._python.write_submission_file` and `rank_predictions_by_score`, and its
+test-set layout off `examples/quick_start/nrms_ebnerd.py`, in `ebanalyse/ebnerd-benchmark`.
+
+| | MIND | EB-NeRD |
+|---|---|---|
+| Competition | [13967](https://www.codabench.org/competitions/13967/) | [2469](https://www.codabench.org/competitions/2469/) |
+| Test archive | `MINDlarge_test.zip`, gated HF mirror | `ebnerd_testset.zip`, 1.63 GB, public S3 |
+| Extracted to | `data/raw/mind/test/` | `data/raw/ebnerd/testset/` — its own `articles.parquet` must not land on the feature store's |
+| Impressions | 2,370,727 | 13,536,710 |
+| Candidates | 93,115,001 | 205,925,868 |
+| Click history | on the impression row | `test/history.parquet`, one row per user, joined on `user_id` |
+| File in the zip | `prediction.txt` | `predictions.txt` — plural |
+| A line | `24481 [4,1,3,2]` | `237 [4,1,3,2]` — the same shape, arrived at independently |
+| Impression id | one row each | one row each for 13,336,710 of them; the 200,000 beyond-accuracy impressions are all stamped `0` |
+
+The last row is the only place the two competitions disagree about what a submission *is*. EB-NeRD's
+beyond-accuracy impressions — 250-candidate lists it scores for diversity rather than for clicks —
+share a single id, so an id is not a row key there and the file is matched by row. The registry says
+so in one field, `repeated_impression_id`, and every other id is still held to appearing once.
 
 ### What is asserted before the file is written
 
@@ -306,9 +338,11 @@ only once all of them have passed, so a run that fails halfway leaves nothing th
 - The retriever returned rankings for the chunk it was given, in that order — they are zipped back
   on positionally, so a reordering would produce a well-formed file that scores every impression
   against another one's candidates.
+- No impression id appears twice, except the one the registry records the competition as repeating
+  on purpose — which narrows the check by a single value rather than turning it off.
 - The number of lines written equals the number of impressions counted from the raw file itself.
 
-### Leaderboard against local
+### Leaderboard against local — MIND
 
 The competition scores the same four metrics the harness does, so the two sit side by side. They are
 **not** measured on the same thing and are not expected to agree: the local column is 30,269
@@ -334,6 +368,39 @@ The last run's own account of what it ranked, which is where a gap would be expl
 Submitting: upload `predictions/mind_submission.zip` under **Participate → Submit**, and save the
 resulting leaderboard entry to `screenshots/mind-leaderboard.png` for the design note.
 
+### Leaderboard against local — EB-NeRD
+
+Here the two retrievers do not separate the way they did on MIND, and the choice of which to submit
+is not settled by the local numbers alone. On 100,981 `ebnerd_small` validation impressions, `bm25`
+leads on AUC by a margin whose bootstrap intervals are disjoint, and the two are indistinguishable
+on every other ranking metric — while `ann`'s own AUC interval contains 0.5. AUC is what the
+challenge ranks on, so both files are generated and the leaderboard decides:
+
+| Metric | Local — `bm25` | Local — `ann` | CodaBench — `bm25` | CodaBench — `ann` |
+|---|---|---|---|---|
+| AUC | 0.5051 [0.5034, 0.5067] | 0.4984 [0.4963, 0.5004] | *fill in* | *fill in* |
+| MRR | 0.3171 [0.3153, 0.3188] | 0.3200 [0.3182, 0.3217] | *fill in* | *fill in* |
+| nDCG@5 | 0.3472 [0.3451, 0.3492] | 0.3474 [0.3453, 0.3494] | *fill in* | *fill in* |
+| nDCG@10 | 0.4316 [0.4299, 0.4333] | 0.4326 [0.4309, 0.4342] | *fill in* | *fill in* |
+
+Choosing between two files by leaderboard score is fitting to the test set, and the design note
+should say so rather than present the winner as the retriever the offline evaluation picked.
+
+The `ann` run's own account of what it ranked:
+
+- 13,536,710 impressions, 205,925,868 candidates, ranked in 708 s — 13 m 34 s wall including the
+  catalogue, the history table and the zip, at a peak of 8.5 GB resident.
+- 0 impressions (0.00%) carry no click history and 0 scored flat: every user in the test file has a
+  history row, and every ranking is the retriever's own work rather than the candidate file's order.
+- 0 articles left without a vector.
+- 703 MB of prediction, 227 MB zipped.
+
+Submitting: `predictions/ebnerd_submission-ann.zip` and `predictions/ebnerd_submission-bm25.zip`
+under **Participate → Submit**, and save the better entry to `screenshots/ebnerd-leaderboard.png`.
+`python -m pipeline.predict --dataset ebnerd [--retriever bm25]` writes whichever of the two is
+asked for, always as `predictions/ebnerd_submission.zip`; the suffixed names are the two runs kept
+side by side.
+
 ## Layout
 
 ```
@@ -349,7 +416,9 @@ pipeline/
   bm25_index.py       BM25 index, click-history queries, recall@K
   embed.py            article vectors, aligned to the catalogue and unit length
   ann_index.py        exact inner-product index, user vectors, recall@K
-  retrieval.py        the ranked shape both retrievers emit, and how it is scored
+  retrieval.py        the ranked shape every retriever emits, and how it is scored
+  features.py         the lexical, semantic, behavioural and popularity columns, causally read
+  fusion.py           the re-ranker over those columns, in a full and a serving-only variant
   evaluate.py         ranking and beyond-accuracy metrics, sliced, with bootstrap intervals
   compare.py          lexical against semantic, both datasets, from the stored results
   sweep.py            the ablation grid over history windows, resumable, one file out
@@ -380,7 +449,8 @@ and `HISTORY_COLUMNS`. Both datasets map onto exactly those columns, and a test 
 The scaffold, the registry, the checkpointed stage runner, raw data acquisition, ingest into the
 unified schema, the temporal split, text preprocessing, BM25 lexical retrieval, article embeddings,
 semantic retrieval, the full evaluation harness — ranking and beyond-accuracy metrics, population
-slices and bootstrap intervals — the lexical-against-semantic comparison, the ablation sweep and the
-MIND CodaBench submission exist. EB-NeRD's submission is the one thing the registry still describes
-as a competition url and nothing else; `python -m pipeline.predict` says so and skips it. It lands
-with ticket 14; see `../tickets/` for the breakdown and the dependency graph.
+slices and bootstrap intervals — the lexical-against-semantic comparison, the ablation sweep and
+both CodaBench submissions all exist. Both leaderboard files are built and verified against the
+competitions' own inputs; what is left is uploading them, and a clean-clone run of the whole thing
+end to end with its wall-clock recorded. That is ticket 15, and the design note ticket 16 writes
+from it; see `../tickets/` for the breakdown and the dependency graph.

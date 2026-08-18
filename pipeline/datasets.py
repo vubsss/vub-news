@@ -199,12 +199,21 @@ class SubmissionSpec:
     # impression_id, user_id, candidate_ids, click_history -- and no labels,
     # which is what makes this a different adapter from the behaviours one.
     impressions: TableSource | None = None
+    # Where the click history comes from, for a competition that ships it as
+    # its own table keyed by user rather than on the impression row. None when
+    # the impressions adapter already returns click_history, as MIND's does.
+    history: TableSource | None = None
     # The name the leaderboard requires inside the zip, and the zip itself.
     filename: str | None = None
     bundle: str | None = None
     # One impression's 1-based ranks, in the order the competition listed its
     # candidates, formatted as one line of the prediction file.
     line: Callable[[str, list[int]], str] | None = None
+    # An impression id the competition stamps on more than one row on purpose,
+    # exempt from the "every impression appears once" guard. Every other id is
+    # still held to it, so this weakens the check by exactly one value rather
+    # than turning it off.
+    repeated_impression_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -462,11 +471,53 @@ EBNERD = DatasetConfig(
         # Nothing encodes for EB-NeRD; the vectors arrive already made.
         max_tokens=None,
     ),
-    # Filled in by ticket 14: the EB-NeRD competition ships a different test
-    # archive and a different line format, and a rejection on one leaderboard
-    # would prove nothing about the other.
     submission=SubmissionSpec(
         competition_url="https://www.codabench.org/competitions/2469/",
+        # ebnerd_testset covers a later week than ebnerd_small and ships its
+        # own catalogue, so it is extracted under `testset/` rather than into
+        # the raw directory: its articles.parquet is a different file from the
+        # one the feature store is built from and must not land on top of it.
+        archives=(
+            Archive(f"{_EBNERD_S3}/ebnerd_testset.zip", "ebnerd_testset.zip", "testset"),
+        ),
+        expected_files=(
+            "testset/articles.parquet",
+            "testset/test/behaviors.parquet",
+            "testset/test/history.parquet",
+        ),
+        token_env=None,
+        articles=TableSource(
+            files=("testset/articles.parquet",),
+            format="parquet",
+            header=None,
+            adapt=sources.ebnerd_articles,
+        ),
+        impressions=TableSource(
+            files=("testset/test/behaviors.parquet",),
+            format="parquet",
+            header=None,
+            adapt=sources.ebnerd_test_impressions,
+        ),
+        # The one shape difference from MIND's submission: history is its own
+        # table here, one row per user, joined on by the predict stage.
+        history=TableSource(
+            files=("testset/test/history.parquet",),
+            format="parquet",
+            header=None,
+            adapt=sources.ebnerd_history,
+        ),
+        # `predictions.txt`, plural, unlike MIND's -- the name the challenge's
+        # own write_submission_file defaults to and the scorer looks for.
+        filename="predictions.txt",
+        bundle="ebnerd_submission.zip",
+        line=submissions.ebnerd_line,
+        # The test file's 13,336,710 ordinary impressions all carry distinct
+        # ids; its 200,000 beyond-accuracy impressions — the 250-candidate
+        # lists the challenge scores for diversity rather than for clicks — are
+        # every one of them stamped 0. So id is not a row key here, and the
+        # submission's real one-to-one guarantee is that it writes one line per
+        # input row in the input's order.
+        repeated_impression_id="0",
     ),
 )
 

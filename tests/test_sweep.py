@@ -213,22 +213,40 @@ def _store_of(store):
                 ["sharks win", "markets fall", "election result"], dtype="string"
             ),
             "category": pd.Series(["sports", "finance", "politics"], dtype="string"),
+            "subcategory": pd.Series(["nfl", "markets", "vote"], dtype="string"),
+            "published_time": pd.to_datetime(
+                ["2019-11-08", "2019-11-08", "2019-11-09"]
+            ),
             "lexical_text": pd.Series(
                 ["sharks win", "markets fall", "election result"], dtype="string"
             ),
         }
     ).to_parquet(store / "articles.parquet", index=False)
 
+    # The two validation impressions the window tests are about, preceded by
+    # train impressions that exist so the fusion retriever has a split to fit
+    # on: it is registered like the other two, so the grid runs it, and a
+    # booster needs both classes present before it will fit at all.
+    train = [f"t{i}" for i in range(8)]
     pd.DataFrame(
         {
-            "impression_id": pd.Series(["d1", "d2"], dtype="string"),
-            "candidate_ids": [["a1", "a2"], ["a1", "a2"]],
-            "labels": [[1, 0], [0, 1]],
-            "split": pd.Series(["validation", "validation"], dtype="string"),
+            "impression_id": pd.Series([*train, "d1", "d2"], dtype="string"),
+            "user_id": pd.Series([*train, "d1", "d2"], dtype="string"),
+            "impression_time": pd.to_datetime(
+                [f"2019-11-10 0{i}:00:00" for i in range(len(train))]
+                + ["2019-11-11 09:00:00", "2019-11-11 10:00:00"]
+            ),
+            "candidate_ids": [["a1", "a2"]] * len(train) + [["a1", "a2"], ["a1", "a2"]],
+            "labels": [[i % 2, 1 - i % 2] for i in range(len(train))]
+            + [[1, 0], [0, 1]],
+            "split": pd.Series(
+                ["train"] * len(train) + ["validation", "validation"], dtype="string"
+            ),
         }
     ).to_parquet(store / "behaviors.parquet", index=False)
 
     clicks = {"d1": ["a2"] * 6 + ["a1"] * 5, "d2": ["a1"] * 6 + ["a2"] * 5}
+    clicks.update({name: ["a1", "a2", "a3"] for name in train})
     pd.DataFrame(
         {
             "impression_id": pd.Series(list(clicks), dtype="string"),

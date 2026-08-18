@@ -146,6 +146,59 @@ def test_an_empty_query_retrieves_nothing_rather_than_arbitrary_articles():
     assert ranked["ranked_ids"][1][0] == "a2"
 
 
+def test_score_pairs_computes_exactly_what_score_candidates_does():
+    """The two are the same arithmetic read out of two shapes of the index —
+    `score_candidates` off a corpus-wide score vector, `score_pairs` off the
+    transpose — and the feature layer uses the second only because the first
+    cannot be run at competition scale. If they ever disagree, every fusion
+    number is measured on a different BM25 from the one this project reports.
+    """
+    index = bm25_index.build(catalogue(), MIND)
+    asked = queries([("dev-1", "markets trade bears"), ("dev-2", ""), ("dev-3", "bears")])
+    candidates = [["a1", "a2", "a3"], ["a2", "a1"], ["a3", "missing", "a1"]]
+
+    ranked = index.score_candidates(asked, candidates)
+    by_pair = {
+        (impression, article): score
+        for impression, ids, scores in zip(
+            ranked["impression_id"], ranked["ranked_ids"], ranked["scores"]
+        )
+        for article, score in zip(ids, scores)
+    }
+    flat = index.score_pairs(
+        [text.split() if text else [] for text in asked["query"]], candidates
+    )
+
+    expected = [
+        by_pair[(impression, article)]
+        for impression, impression_candidates in zip(asked["impression_id"], candidates)
+        for article in impression_candidates
+    ]
+    assert list(flat) == pytest.approx(expected, abs=1e-5)
+
+
+def test_score_pairs_counts_a_repeated_query_term_twice():
+    """`get_scores` sums over the query's token ids with their multiplicity —
+    a term the user's history mentions twice weighs twice — and the transpose
+    has to do the same or the two drift apart on exactly the queries a click
+    history produces."""
+    index = bm25_index.build(catalogue(), MIND)
+
+    once = index.score_pairs([["bears"]], [["a1"]])[0]
+    twice = index.score_pairs([["bears", "bears"]], [["a1"]])[0]
+
+    assert twice == pytest.approx(2 * once, rel=1e-5)
+
+
+def test_score_pairs_scores_a_candidate_outside_the_corpus_at_zero():
+    index = bm25_index.build(catalogue(), MIND)
+
+    scores = index.score_pairs([["bears"]], [["a1", "not-in-the-corpus"]])
+
+    assert scores[0] > 0
+    assert scores[1] == 0.0
+
+
 def test_a_reloaded_index_retrieves_exactly_what_the_built_one_did(tmp_path):
     """The index is saved so a rerun need not rebuild it, which is only safe
     if the saved one answers identically — including the article ids, which

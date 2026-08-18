@@ -39,12 +39,20 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-from pipeline import ann_index, bm25_index, paths, retrieval
+from pipeline import ann_index, bm25_index, fusion, paths, retrieval
 from pipeline.datasets import DATASETS, DatasetConfig
 
 # The retrievers the harness can score. The values are modules, each exposing
-# rank_candidates(config, behaviors, history) -> ranked candidates.
-RETRIEVERS = {"bm25": bm25_index, "ann": ann_index}
+# rank_candidates(config, behaviors, history) -> ranked candidates. The two
+# fusion entries are namespaces rather than modules — same three functions,
+# differing only in which features they are allowed, which is what makes the
+# with-and-without-serving-features comparison one line here.
+RETRIEVERS = {
+    "bm25": bm25_index,
+    "ann": ann_index,
+    "fusion": fusion.FULL,
+    "fusion-serving": fusion.SERVING,
+}
 
 # nDCG cut-offs, per SPEC.
 NDCG_DEPTHS = (5, 10)

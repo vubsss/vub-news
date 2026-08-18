@@ -224,11 +224,25 @@ class Comparison:
         return self.at(slice_name, ACCURACY[0]).population
 
 
+# What a report written before one of SHARED existed reads as. Such a report
+# is a disagreement rather than a crash: it is exactly the stale artifact the
+# check below is for, and it has to arrive at that message rather than at a
+# KeyError from the comparison of a field one side never recorded.
+ABSENT = "not recorded"
+
+
 def agree(lex: dict, sem: dict) -> None:
     """Refuse to compare two reports that are not about the same measurement."""
-    differ = [field for field in SHARED if lex[field] != sem[field]]
+    differ = [
+        field
+        for field in SHARED
+        if lex.get(field, ABSENT) != sem.get(field, ABSENT)
+    ]
     if differ:
-        detail = ", ".join(f"{f}: {lex[f]!r} vs {sem[f]!r}" for f in differ)
+        detail = ", ".join(
+            f"{f}: {lex.get(f, ABSENT)!r} vs {sem.get(f, ABSENT)!r}"
+            for f in differ
+        )
         raise ComparisonError(
             f"the stored {LEXICAL} and {SEMANTIC} reports disagree on {detail}. "
             f"They were produced from different data or different settings, so "

@@ -248,6 +248,12 @@ class DatasetConfig:
     columns: ColumnMap
     embeddings: EmbeddingSpec
     submission: SubmissionSpec
+    # Other vector sources for this dataset, keyed by `spec.model`. The
+    # pipeline never builds these -- `embeddings` above is what every stage
+    # reads. They exist so the choice of vector source is a measured one:
+    # `python -m pipeline.embed_compare` scores each on the tune split, and
+    # whichever wins is promoted into `embeddings` by hand.
+    embedding_variants: tuple[EmbeddingSpec, ...] = ()
 
     @property
     def raw_dir(self) -> Path:
@@ -438,6 +444,25 @@ EBNERD = DatasetConfig(
                 "google_bert_base_multilingual_cased.zip",
                 "embeddings",
             ),
+            # The alternatives `embedding_variants` below describes. Fetched
+            # with the rest of the raw data rather than on demand: they are
+            # the evidence for which vector source this dataset should use,
+            # and a comparison nobody can reproduce is not evidence.
+            Archive(
+                f"{_EBNERD_S3}/artifacts/Ekstra_Bladet_contrastive_vector.zip",
+                "Ekstra_Bladet_contrastive_vector.zip",
+                "embeddings",
+            ),
+            Archive(
+                f"{_EBNERD_S3}/artifacts/Ekstra_Bladet_word2vec.zip",
+                "Ekstra_Bladet_word2vec.zip",
+                "embeddings",
+            ),
+            Archive(
+                f"{_EBNERD_S3}/artifacts/FacebookAI_xlm_roberta_base.zip",
+                "FacebookAI_xlm_roberta_base.zip",
+                "embeddings",
+            ),
         ),
         expected_files=(
             "articles.parquet",
@@ -446,6 +471,9 @@ EBNERD = DatasetConfig(
             "validation/behaviors.parquet",
             "validation/history.parquet",
             "embeddings/bert_base_multilingual_cased.parquet",
+            "embeddings/contrastive_vector.parquet",
+            "embeddings/document_vector.parquet",
+            "embeddings/xlm_roberta_base.parquet",
         ),
         token_env=None,
     ),
@@ -537,6 +565,40 @@ EBNERD = DatasetConfig(
         # Past that the correction is removing signal along with the offset,
         # so the statistic diagnoses the problem and does not pick the fix.
         postprocess="abtt:3",
+    ),
+    # The three other vector sources EB-NeRD ships, all covering the same
+    # 125,541 articles as the one above. Two of them arrive already unit
+    # length, which is itself a signal about what they were prepared for.
+    embedding_variants=(
+        EmbeddingSpec(
+            kind="provided",
+            model="contrastive_vector",
+            dim=768,
+            artifact="embeddings/contrastive_vector.parquet",
+            gdrive_file_id=None,
+            # Ships at unit length already.
+            normalise=False,
+            max_tokens=None,
+        ),
+        EmbeddingSpec(
+            kind="provided",
+            model="document_vector",  # word2vec
+            dim=300,
+            artifact="embeddings/document_vector.parquet",
+            gdrive_file_id=None,
+            normalise=False,
+            max_tokens=None,
+        ),
+        EmbeddingSpec(
+            kind="provided",
+            model="xlm_roberta_base",
+            dim=768,
+            artifact="embeddings/xlm_roberta_base.parquet",
+            gdrive_file_id=None,
+            # Raw encoder output, norms around 18.7.
+            normalise=True,
+            max_tokens=None,
+        ),
     ),
     submission=SubmissionSpec(
         competition_url="https://www.codabench.org/competitions/2469/",

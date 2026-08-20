@@ -120,6 +120,28 @@ would not fit, and this way the columns never change and the table sorts and gre
 The harness reaches a retriever only through `rank_candidates`, so adding a third one means adding an
 entry to `RETRIEVERS` and nothing else.
 
+### Four partitions, not three
+
+The split is `train / tune / validation / test`, strictly in time, with the three held-out windows
+measured back from the end of the log.
+
+| | train | tune | validation | test |
+|---|---:|---:|---:|---:|
+| MIND | 95,071 | 31,625 | 30,269 | 73,152 |
+| EB-NeRD | 225,110 | 66,908 | 100,981 | 84,535 |
+
+`tune` exists because selecting a parameter and reporting a result are different jobs and one
+partition cannot do both. Every choice this project makes — the history window, the embedding
+correction, the BM25 constants — is made on **tune**; every number it reports comes from
+**validation**; **test** is scored once, at the end. Reverting a tune-split choice because a
+validation number disagreed would be selecting on validation, which is the whole thing this
+prevents.
+
+The tune window is carved off the *end* of train, so it is adjacent in time to the population it
+stands in for. Because the held-out windows are measured from the end of the log, adding it moved
+only the train/tune boundary: validation and test cover exactly the days they always did, and a
+re-scored report reproduces its predecessor byte for byte.
+
 Two things it will not do. **It refuses the train split** — metrics on the data a retriever was tuned
 against measure memorisation, and `--split train` fails with that explanation rather than returning
 numbers. And **the build stage never scores test**: a figure regenerated on every rebuild is one that
@@ -167,6 +189,80 @@ articles. Read that row's interval as a width and compare coverage between retri
 Popularity — for novelty and for head/tail — is counted on the split being scored, since these
 numbers describe the population the report is about. Nothing here reaches a retriever, so it is
 description rather than leakage.
+
+## Embedding geometry
+
+The single largest improvement in this project came from three lines of numpy, and finding it needed
+a statistic the pipeline was not computing.
+
+Raw transformer output does not fill the space it lives in — it occupies a narrow cone, so any two
+vectors have a high cosine whatever the two articles say, and the signal a retriever needs rides as a
+small residual on a large shared offset. The embed stage now prints the symptom for every dataset:
+
+```
+anisotropy 0.9491 -> 0.0016 under abtt:3
+```
+
+That is the mean cosine between two different articles. EB-NeRD's shipped multilingual BERT vectors
+sat at **0.9503** — every article 95% similar to every other — and its semantic retriever scored AUC
+0.4984, a coin flip, for that reason and no other. MIND's sentence-trained MiniLM sits at **0.0630**
+and needs almost nothing.
+
+Four corrections, chosen per dataset in the registry the way `normalise` already is:
+
+| | what it removes |
+|---|---|
+| `none` | nothing |
+| `centre` | the corpus mean, which is the shared offset |
+| `abtt:n` | the mean, then the *n* leading principal directions |
+| `whiten` | the whole covariance, decorrelated |
+
+Which one is a measured choice, made on the tune split:
+
+| correction | EB-NeRD auc | anisotropy | | MIND auc | anisotropy |
+|---|---:|---:|---|---:|---:|
+| none | 0.4877 | +0.9491 | | 0.6250 | +0.0630 |
+| centre | 0.5199 | +0.0317 | | **0.6320** | −0.0000 |
+| abtt:1 | 0.5409 | +0.0063 | | 0.6213 | −0.0001 |
+| **abtt:3** | **0.5477** | +0.0016 | | 0.6061 | −0.0000 |
+| abtt:5 | 0.5441 | +0.0008 | | 0.5940 | −0.0001 |
+| whiten | 0.5216 | **+0.0001** | | 0.5793 | −0.0000 |
+
+On validation that takes EB-NeRD's semantic retriever from 0.4984 [0.4963, 0.5004] to
+**0.5500 [0.5479, 0.5519]**, and recall@200 from 0.0170 to 0.0266.
+
+**Three things in that table are worth more than the headline number.**
+
+*The statistic diagnoses the problem and does not choose the fix.* Anisotropy falls monotonically
+down both columns, and `whiten` reaches the best geometry of the six on both datasets while ranking
+among the worst. AUC turns over at three components on EB-NeRD and at zero on MIND. Past the turn the
+correction is removing signal along with the offset, so the correction has to be swept and cannot be
+read off the geometry.
+
+*The same transform helps in proportion to how broken the vectors were.* EB-NeRD gains 0.060 and MIND
+0.007, which is the control that makes the EB-NeRD result credible rather than an artefact of the
+method — and over-correction costs MIND up to 0.046, because on vectors that were never broken the
+leading directions carry signal rather than offset.
+
+*A marginal tune-split effect did not replicate.* MIND's `centre` was chosen on tune by +0.007 and
+validation put it at −0.0025 with overlapping intervals, while its other three ranking metrics and
+its recall rose. It is kept regardless: reverting on the strength of a validation number is selecting
+on validation. Nothing is established either way on MIND, and that is the honest reading.
+
+### Which vectors, not just which correction
+
+EB-NeRD ships **four** sets of article vectors and the pipeline can index one. Which one was never
+measured — the multilingual BERT file was taken because it is the one the assignment's download
+snippet names, and it is the one whose geometry is broken. So every source is scored under every
+correction:
+
+```bash
+python -m pipeline.embed_compare --dataset ebnerd
+```
+
+Writes `artifacts/embeddings-tune.jsonl` and a markdown table beside it. It chooses nothing: promoting
+a winner into the registry stays a hand edit with a commit message, because it is a decision rather
+than a computation.
 
 ## Lexical against semantic
 
@@ -411,10 +507,11 @@ pipeline/
   acquire.py          download and extract raw archives
   ingest.py           raw files -> the unified schema, dataset-agnostic
   sources.py          per-dataset adapters: the only module that knows either shape
-  split.py            temporal train/validation/test split and its leakage guards
+  split.py            temporal train/tune/validation/test split and its leakage guards
   preprocess.py       language-parameterised cleaning, for documents and queries alike
   bm25_index.py       BM25 index, click-history queries, recall@K
-  embed.py            article vectors, aligned to the catalogue and unit length
+  embed.py            article vectors, aligned, unit length, and geometrically corrected
+  embed_compare.py    every vector source under every correction, scored on tune
   ann_index.py        exact inner-product index, user vectors, recall@K
   retrieval.py        the ranked shape every retriever emits, and how it is scored
   evaluate.py         ranking and beyond-accuracy metrics, sliced, with bootstrap intervals

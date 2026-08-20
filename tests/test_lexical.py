@@ -87,3 +87,84 @@ def test_changing_b_changes_the_ranking_of_documents_of_different_length():
     assert divides_it_out["ranked_ids"][0][0] == "short", (
         "at b=1 the short document must win"
     )
+
+
+# --- field weighting --------------------------------------------------------
+
+
+def test_a_weight_of_one_is_exactly_the_old_concatenation():
+    """The regression guard. Every BM25 number on record was produced by
+    cleaning `title + " " + abstract` as one string; composing the two fields
+    separately and joining them must produce the identical text at weight 1,
+    or those numbers moved without anyone choosing to move them."""
+    frame = pd.DataFrame(
+        {
+            "title": pd.Series(["Sharks win again", "Markets fall"], dtype="string"),
+            "abstract": pd.Series(["A hockey report.", ""], dtype="string"),
+        }
+    )
+    clean = preprocess.cleaner(MIND)
+    expected = [
+        clean("Sharks win again A hockey report."),
+        clean("Markets fall"),
+    ]
+
+    text, _ = preprocess.build_lexical_text(frame, MIND, title_weight=1)
+
+    assert list(text) == expected
+
+
+def test_the_title_is_repeated_by_its_weight():
+    """The mechanism: a term in the title occurs `weight` times in the indexed
+    text, which raises its term frequency before saturation."""
+    frame = pd.DataFrame(
+        {
+            "title": pd.Series(["sharks"], dtype="string"),
+            "abstract": pd.Series(["hockey"], dtype="string"),
+        }
+    )
+
+    text, _ = preprocess.build_lexical_text(frame, MIND, title_weight=3)
+
+    assert list(text)[0].split().count("sharks") == 3
+    assert list(text)[0].split().count("hockey") == 1
+
+
+def test_an_article_with_no_abstract_is_still_weighted_the_same_way():
+    """5% of MIND and 8% of EB-NeRD have no abstract, so a title-only article
+    is not an edge case. Its title must be repeated like any other, rather than
+    being left at weight one because there is no second field to balance."""
+    frame = pd.DataFrame(
+        {
+            "title": pd.Series(["sharks"], dtype="string"),
+            "abstract": pd.Series([""], dtype="string"),
+        }
+    )
+
+    text, _ = preprocess.build_lexical_text(frame, MIND, title_weight=3)
+
+    assert list(text)[0].split() == ["sharks"] * 3
+
+
+def test_weighting_the_title_moves_a_ranking_that_depended_on_it():
+    """Two articles, one matching the query in its title and one in its
+    abstract. Raising the title's weight has to move them, or the parameter is
+    inert and a sweep over it would report a flat surface."""
+    rows = [
+        ("in_title", "hockey", "an unrelated report about finance"),
+        ("in_abstract", "an unrelated headline", "hockey hockey"),
+    ]
+    query = pd.DataFrame(
+        {
+            "impression_id": pd.Series(["i1"], dtype="string"),
+            "query": pd.Series(["hockey"], dtype="string"),
+        }
+    )
+
+    def top(weight):
+        config = tuned(title_weight=weight)
+        corpus = articles(rows, config)
+        return bm25_index.build(corpus, config).retrieve(query, depth=2)["ranked_ids"][0][0]
+
+    assert top(1) == "in_abstract"
+    assert top(5) == "in_title"

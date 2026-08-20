@@ -496,6 +496,21 @@ EBNERD = DatasetConfig(
         normalise=True,
         # Nothing encodes for EB-NeRD; the vectors arrive already made.
         max_tokens=None,
+        # Chosen on the tune split over {none, centre, abtt:1/3/5/10, whiten},
+        # 66,908 impressions. The shipped vectors rank at chance because they
+        # occupy a narrow cone; removing the mean and three principal
+        # directions is what makes an inner product between two of them mean
+        # anything:
+        #
+        #   none 0.4877   centre 0.5199   abtt:1 0.5409   abtt:3 0.5477
+        #   abtt:5 0.5441  abtt:10 0.5322  whiten 0.5216
+        #
+        # Note the peak is not where the geometry is best. Anisotropy falls
+        # monotonically across that row -- whiten reaches 0.0001, the most
+        # isotropic of the seven -- while AUC turns over at three components.
+        # Past that the correction is removing signal along with the offset,
+        # so the statistic diagnoses the problem and does not pick the fix.
+        postprocess="abtt:3",
     ),
     submission=SubmissionSpec(
         competition_url="https://www.codabench.org/competitions/2469/",

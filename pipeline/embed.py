@@ -272,6 +272,13 @@ def postprocess(matrix: np.ndarray, method: str) -> np.ndarray:
 
     if name == "abtt":
         components = int(argument) if argument else 1
+        # Removing as many directions as the sample has leaves nothing behind:
+        # every row becomes zero, which passes the unit-norm check (it skips
+        # zero rows) and produces a retriever that silently scores everything
+        # the same. Real corpora are far above this, but a toy one is not.
+        components = min(components, len(fitted) - 1, matrix.shape[1] - 1)
+        if components < 1:
+            return matrix
         # Estimated on the centred sample, so they are directions of variation
         # rather than of the offset that has already been removed.
         _, _, directions = np.linalg.svd(

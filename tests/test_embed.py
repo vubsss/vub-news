@@ -189,7 +189,14 @@ def test_build_puts_the_corpus_in_charge_of_rows_and_hands_back_one_interface(tr
                    ids=(1, 2, 9))
     articles = pd.DataFrame({"article_id": pd.Series(["2", "1"], dtype="string")})
 
-    embeddings, report = embed.build(articles, EBNERD)
+    # Geometry correction pinned off: this is about which row an article lands
+    # on, and asserting exact vector values is only how that is shown. Left on
+    # the registry's own setting the test would fail whenever the tune split
+    # chose a different correction, which says nothing about alignment.
+    config = dataclasses.replace(
+        EBNERD, embeddings=dataclasses.replace(EBNERD.embeddings, postprocess="none")
+    )
+    embeddings, report = embed.build(articles, config)
 
     assert list(embeddings.article_ids) == ["2", "1"]
     assert embeddings.index == {"2": 0, "1": 1}

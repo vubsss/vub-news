@@ -362,6 +362,32 @@ MIND = DatasetConfig(
         # already unit length. Verified on load rather than redone.
         normalise=False,
         max_tokens=256,
+        # Chosen on tune over the same seven settings EB-NeRD was, 30,894
+        # scorable impressions:
+        #
+        #   none 0.6250   centre 0.6320   abtt:1 0.6213   abtt:3 0.6061
+        #   abtt:5 0.5940  abtt:10 0.5810  whiten 0.5793
+        #
+        # The contrast with EB-NeRD is the point. MiniLM is sentence-trained
+        # and arrives near-isotropic at 0.0630, so there is barely a cone to
+        # remove: correction buys 0.007 here against 0.060 there, and removing
+        # more than the mean costs up to 0.046, because on vectors that were
+        # never broken the leading directions carry signal rather than offset.
+        #
+        # The tune preference for `centre` did not replicate. On validation
+        # auc goes 0.6252 [0.6219, 0.6286] -> 0.6227 [0.6195, 0.6259] -- down,
+        # not up, with the intervals overlapping -- while mrr, ndcg@5, ndcg@10
+        # and recall@200 (0.0344 -> 0.0456) all rise. So nothing is
+        # established either way on the ranking metrics here, and the honest
+        # reading is that MIND's geometry was not broken enough for this to
+        # matter.
+        #
+        # Kept anyway, because it is what the tune split chose. Reverting on
+        # the strength of a validation number would be selecting on validation,
+        # which is the contamination the tune split exists to prevent -- and a
+        # marginal effect that fails to replicate is the ordinary outcome that
+        # holding out a reporting split is designed to expose.
+        postprocess="centre",
     ),
     submission=SubmissionSpec(
         competition_url="https://www.codabench.org/competitions/13967/",

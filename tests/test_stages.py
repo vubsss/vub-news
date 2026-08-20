@@ -61,8 +61,10 @@ def test_acquisition_failure_exits_non_zero_without_a_traceback(
     # really does need a token. Also stops the test hitting the network.
     monkeypatch.setattr(paths, "RAW_DIR", tmp_path / "raw")
     monkeypatch.setattr(paths, "CHECKPOINT_DIR", tmp_path / "checkpoints")
-    # ROOT too, or the repo's real .env would hand the run a working token.
-    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    # REPO_ROOT too, or the repo's real .env would hand the run a working
+    # token: load_env_file reads the credential from beside the code, not from
+    # wherever this run was told to write its outputs.
+    monkeypatch.setattr(paths, "REPO_ROOT", tmp_path)
     monkeypatch.delenv("HF_TOKEN", raising=False)
 
     assert build.main(["--dataset", "mind"]) == 1
@@ -109,7 +111,7 @@ def test_a_missing_embedding_artifact_exits_without_a_traceback(
 
 
 def test_env_file_supplies_credentials(tmp_path, monkeypatch):
-    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.setattr(paths, "REPO_ROOT", tmp_path)
     monkeypatch.delenv("HF_TOKEN", raising=False)
     (tmp_path / ".env").write_text("# comment\n\nHF_TOKEN='from-file'\n")
 
@@ -119,7 +121,7 @@ def test_env_file_supplies_credentials(tmp_path, monkeypatch):
 
 
 def test_exported_variable_beats_the_env_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.setattr(paths, "REPO_ROOT", tmp_path)
     monkeypatch.setenv("HF_TOKEN", "from-shell")
     (tmp_path / ".env").write_text("HF_TOKEN=from-file\n")
 
@@ -129,7 +131,7 @@ def test_exported_variable_beats_the_env_file(tmp_path, monkeypatch):
 
 
 def test_missing_env_file_is_not_an_error(tmp_path, monkeypatch):
-    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.setattr(paths, "REPO_ROOT", tmp_path)
 
     paths.load_env_file()
 

@@ -137,8 +137,18 @@ class SplitSpec:
     small distributions shipped here are one week (MIND) and two (EB-NeRD), so
     a week each would leave train empty; the windows are scaled to the span
     each dataset actually covers.
+
+    `tune_days` is carved off the end of train and is where every parameter is
+    selected — the history window, the BM25 constants, the embedding
+    post-processing. It exists because validation cannot both choose a
+    parameter and report the result of that choice: doing both makes the
+    reported number a description of the selection rather than of the
+    retriever. Taken from the end of train rather than the start because it is
+    then adjacent in time to validation, which is the population it is standing
+    in for.
     """
 
+    tune_days: int
     val_days: int
     test_days: int
 
@@ -264,8 +274,10 @@ MIND = DatasetConfig(
         token_env="HF_TOKEN",
     ),
     # MINDsmall covers one week, so a week each for validation and test would
-    # leave train empty; a day each keeps train the largest partition.
-    split=SplitSpec(val_days=1, test_days=1),
+    # leave train empty; a day each keeps train the largest partition. One more
+    # day for tuning still leaves train four times the size of any other
+    # partition.
+    split=SplitSpec(tune_days=1, val_days=1, test_days=1),
     sources=SourceSpec(
         articles=TableSource(
             files=("train/news.tsv", "dev/news.tsv"),
@@ -399,8 +411,10 @@ EBNERD = DatasetConfig(
         ),
         token_env=None,
     ),
-    # ebnerd_small covers two weeks: three days each, train keeps the rest.
-    split=SplitSpec(val_days=3, test_days=3),
+    # ebnerd_small covers two weeks: three days each, train keeps the rest. Two
+    # days to tune on, which is the smallest window that still holds enough
+    # impressions to separate two configurations.
+    split=SplitSpec(tune_days=2, val_days=3, test_days=3),
     sources=SourceSpec(
         articles=TableSource(
             files=("articles.parquet",),

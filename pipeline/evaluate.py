@@ -54,9 +54,11 @@ RETRIEVERS = {
 # nDCG cut-offs, per SPEC.
 NDCG_DEPTHS = (5, 10)
 
-# Metrics are reported on these; train is refused outright.
-VALIDATION, TEST = "validation", "test"
-SCORABLE = (VALIDATION, TEST)
+# Metrics are scored on these; the split a model fits on is refused outright.
+# `tune` is here because choosing a parameter needs a number to choose on, and
+# it is deliberately not where results are reported: that is `validation`.
+TUNE, VALIDATION, TEST = "tune", "validation", "test"
+SCORABLE = (TUNE, VALIDATION, TEST)
 TRAIN = "train"
 
 # How far down a ranking the beyond-accuracy metrics look. They describe the
@@ -549,12 +551,14 @@ def evaluate(
     not comparable, and a report that did not carry the window would let that
     comparison be made without anything noticing — ticket 12 sweeps it.
     """
-    if split == TRAIN:
+    if split in (TRAIN, "fit"):
         raise EvaluationError(
-            f"refusing to score the {TRAIN} split. Metrics on data the "
-            f"retriever was tuned against measure memorisation, and reporting "
-            f"them is the self-deception the assignment's anti-gaming section "
-            f"is about. Use one of: {', '.join(SCORABLE)}."
+            f"refusing to score the {TRAIN} split: it is what a model fits "
+            f"on, and metrics over it measure memorisation rather than "
+            f"retrieval, which is the self-deception the assignment's "
+            f"anti-gaming section is about. Choose parameters on {TUNE} and "
+            f"report them on {VALIDATION}; {TEST} is held back for the final "
+            f"run. Use one of: {', '.join(SCORABLE)}."
         )
     if split not in SCORABLE:
         raise EvaluationError(

@@ -474,6 +474,31 @@ def test_scoring_the_train_split_is_refused():
         evaluate.evaluate(MIND, "bm25", split="train")
 
 
+def test_the_refusal_names_the_split_to_use_instead():
+    """A refusal that only says no leaves the caller guessing which of the
+    four partitions they were supposed to ask for."""
+    with pytest.raises(evaluate.EvaluationError) as raised:
+        evaluate.evaluate(MIND, "bm25", split="train")
+
+    assert "tune" in str(raised.value)
+    assert "validation" in str(raised.value)
+
+
+def test_fit_is_refused_as_an_alias_for_train():
+    """`fit` is the name the phase-1 ticket used for this partition. It is not
+    the name the registry settled on, so asking for it must land on the same
+    refusal rather than on "unknown split", which would read as a typo."""
+    with pytest.raises(evaluate.EvaluationError, match="memorisation"):
+        evaluate.evaluate(MIND, "bm25", split="fit")
+
+
+def test_the_tune_split_is_scorable():
+    """Selecting a parameter needs a number to select on. Tune is the only
+    partition that may be scored without being reported."""
+    assert "tune" in evaluate.SCORABLE
+    assert "train" not in evaluate.SCORABLE
+
+
 def test_an_unknown_split_or_retriever_is_refused():
     with pytest.raises(evaluate.EvaluationError, match="unknown split"):
         evaluate.evaluate(MIND, "bm25", split="dev")

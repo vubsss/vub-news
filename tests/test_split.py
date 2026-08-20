@@ -32,10 +32,10 @@ def test_every_impression_is_labelled_by_its_timestamp():
         ]
     )
 
-    labelled = split.assign(frame, SplitSpec(val_days=1, test_days=1))
+    labelled = split.assign(frame, SplitSpec(tune_days=1, val_days=1, test_days=1))
 
     assert not labelled["split"].isna().any()
-    assert list(labelled["split"]) == ["train", "train", "validation", "test"]
+    assert list(labelled["split"]) == ["train", "tune", "validation", "test"]
 
 
 def test_partitions_that_overlap_in_time_abort_the_run():
@@ -48,7 +48,7 @@ def test_partitions_that_overlap_in_time_abort_the_run():
                 "2019-11-15 23:58:03",
             ]
         ),
-        SplitSpec(val_days=1, test_days=1),
+        SplitSpec(tune_days=1, val_days=1, test_days=1),
     )
     split.check_ordering(labelled)
 
@@ -151,15 +151,17 @@ def test_run_labels_every_impression_and_reports_each_partition(store, capsys):
     written = pd.read_parquet(store / "behaviors.parquet")
     assert not written["split"].isna().any()
     counts = written["split"].value_counts()
-    # MIND's registry window: one day test, one day validation, five train.
-    assert counts["train"] == 5
+    # MIND's registry windows: a day each of test, validation and tune, and the
+    # four remaining days are train.
+    assert counts["train"] == 4
+    assert counts["tune"] == 1
     assert counts["validation"] == 1
     assert counts["test"] == 1
 
     # Row counts and date ranges per partition, so an empty test week or a
     # validation partition larger than train is visible at a glance.
     printed = capsys.readouterr().out
-    for label in ("train", "validation", "test"):
+    for label in ("train", "tune", "validation", "test"):
         assert label in printed
     assert "2019-11-09" in printed
     assert "2019-11-15" in printed
@@ -186,6 +188,64 @@ def test_run_aborts_on_a_future_click(store):
 
     with pytest.raises(split.LeakageError, match="a2"):
         split.run(MIND)
+
+
+def test_the_tune_window_is_carved_from_the_end_of_train():
+    """Tune sits between train and validation, not at the start of the log.
+
+    Which end it comes from is the whole point: a tuning window taken from the
+    beginning of train would be the furthest thing in time from the population
+    it stands in for.
+    """
+    frame = behaviors([f"2019-11-{day:02d} 12:00:00" for day in range(9, 16)])
+
+    labelled = split.assign(frame, SplitSpec(tune_days=2, val_days=1, test_days=1))
+
+    windows = labelled.groupby("split")["impression_time"]
+    assert windows.max()["train"] < windows.min()["tune"]
+    assert windows.max()["tune"] < windows.min()["validation"]
+
+
+def test_adding_a_tune_window_moves_only_the_train_boundary():
+    """Validation and test cover the same days they did without a tune split.
+
+    This is what makes numbers reported before and after this change
+    comparable: the held-out windows are measured back from the end of the log,
+    so carving a tuning window out of train cannot reach them.
+    """
+    frame = behaviors([f"2019-11-{day:02d} 12:00:00" for day in range(9, 16)])
+
+    without = split.assign(frame, SplitSpec(tune_days=0, val_days=1, test_days=1))
+    with_tune = split.assign(frame, SplitSpec(tune_days=2, val_days=1, test_days=1))
+
+    for partition in ("validation", "test"):
+        assert list(without[without["split"] == partition]["impression_id"]) == list(
+            with_tune[with_tune["split"] == partition]["impression_id"]
+        )
+
+
+def test_an_impression_exactly_on_a_boundary_joins_the_earlier_partition():
+    """MIND ships one impression at exactly 2019-11-14 00:00:00, which is a
+    partition boundary. Which side it lands on is arbitrary; that it lands on
+    the same side every run is not, because a row changing sides silently moves
+    a population between two reported numbers.
+
+    Bins are right-closed, so the boundary row belongs to the earlier
+    partition: at MIND's windows, 2019-11-14 00:00:00 is the last moment of
+    tune rather than the first of validation.
+    """
+    frame = behaviors(
+        [
+            "2019-11-09 00:00:19",
+            "2019-11-14 00:00:00",  # exactly the tune/validation boundary
+            "2019-11-14 00:00:11",
+            "2019-11-15 12:00:00",
+        ]
+    )
+
+    labelled = split.assign(frame, MIND.split)
+
+    assert list(labelled["split"]) == ["train", "tune", "validation", "test"]
 
 
 @pytest.mark.parametrize("config", list(DATASETS.values()), ids=lambda c: c.name)

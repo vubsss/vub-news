@@ -39,7 +39,7 @@ def cell(dataset="mind", retriever="bm25", history_k=10, auc=(0.6, 0.55, 0.65),
         "dataset": dataset,
         "retriever": retriever,
         "history_k": history_k,
-        "split": "validation",
+        "split": "tune",
         "seconds": seconds,
         "recall": [
             {"depth": depth, "value": (recall or {}).get(depth, 0.3),
@@ -50,7 +50,7 @@ def cell(dataset="mind", retriever="bm25", history_k=10, auc=(0.6, 0.55, 0.65),
             "dataset": dataset,
             "retriever": retriever,
             "history_k": history_k,
-            "split": "validation",
+            "split": "tune",
             "resamples": resamples,
             "results": results,
         },
@@ -162,7 +162,7 @@ def test_the_document_puts_depth_only_where_depth_can_matter():
     than the data supports."""
     rows = [cell(history_k=5), cell(history_k=20)]
 
-    text = sweep.document(rows, "validation")
+    text = sweep.document(rows, "tune")
 
     assert "truncate" in text
     for depth in retrieval.DEPTHS:
@@ -175,7 +175,7 @@ def test_the_document_puts_depth_only_where_depth_can_matter():
 def test_the_document_says_recall_carries_no_interval():
     """Reported without one, so it has to be said rather than left for a
     reader to notice a missing column."""
-    text = sweep.document([cell()], "validation")
+    text = sweep.document([cell()], "tune")
 
     assert "no interval" in text
     assert sweep.PRIMARY in text
@@ -223,8 +223,10 @@ def _store_of(store):
         }
     ).to_parquet(store / "articles.parquet", index=False)
 
-    # The two validation impressions the window tests are about, preceded by
-    # train impressions, so the store has the shape the real one does.
+    # The two tune impressions the window tests are about, preceded by train
+    # impressions, so the store has the shape the real one does. Tune rather
+    # than validation because that is the split the sweep now runs on: a
+    # parameter is chosen there and reported on validation.
     train = [f"t{i}" for i in range(8)]
     pd.DataFrame(
         {
@@ -238,7 +240,7 @@ def _store_of(store):
             "labels": [[i % 2, 1 - i % 2] for i in range(len(train))]
             + [[1, 0], [0, 1]],
             "split": pd.Series(
-                ["train"] * len(train) + ["validation", "validation"], dtype="string"
+                ["train"] * len(train) + ["tune", "tune"], dtype="string"
             ),
         }
     ).to_parquet(store / "behaviors.parquet", index=False)
@@ -261,7 +263,7 @@ def _store_of(store):
     ).save(embed.output_dir(MIND))
 
 
-def stored(split="validation"):
+def stored(split="tune"):
     return sweep.load(split)
 
 
@@ -307,11 +309,11 @@ def test_every_line_carries_the_configuration_its_numbers_came_from(store):
     ) == 0
 
     line = json.loads(
-        sweep.results_path("validation").read_text().splitlines()[0],
+        sweep.results_path("tune").read_text().splitlines()[0],
         parse_constant=lambda name: pytest.fail(f"wrote {name}, which is not json"),
     )
     assert (line["dataset"], line["retriever"], line["history_k"], line["split"]) == (
-        "mind", "bm25", 5, "validation",
+        "mind", "bm25", 5, "tune",
     )
     assert {entry["depth"] for entry in line["recall"]} == set(retrieval.DEPTHS)
     assert line["report"]["history_k"] == 5
@@ -325,7 +327,7 @@ def test_an_interrupted_sweep_resumes_instead_of_starting_over(store, capsys):
         ["--dataset", "mind", "--retriever", "bm25", "--window", "5",
          "--resamples", "20"]
     ) == 0
-    first = sweep.results_path("validation").read_text()
+    first = sweep.results_path("tune").read_text()
     capsys.readouterr()
 
     assert sweep.main(
@@ -333,7 +335,7 @@ def test_an_interrupted_sweep_resumes_instead_of_starting_over(store, capsys):
          "--window", "20", "--resamples", "20"]
     ) == 0
 
-    after = sweep.results_path("validation").read_text()
+    after = sweep.results_path("tune").read_text()
     assert after.startswith(first), "the completed cell was rewritten"
     assert len(stored()) == 2
     assert "resuming: 1 of 2 cells already done" in capsys.readouterr().out
@@ -385,9 +387,13 @@ def test_the_comparison_reads_a_swept_cell_without_transcription(store, capsys):
     ) == 0
     capsys.readouterr()
 
-    assert compare.main(["--dataset", "mind", "--window", "5"]) == 0
+    # --split is explicit: compare reports on validation by default, and a
+    # swept cell lives on whichever split the grid ran, which is tune.
+    assert compare.main(
+        ["--dataset", "mind", "--window", "5", "--split", "tune"]
+    ) == 0
 
-    text = (paths.ARTIFACTS_DIR / "comparison-validation-k5.md").read_text()
+    text = (paths.ARTIFACTS_DIR / "comparison-tune-k5.md").read_text()
     assert "history window 5" in text
     swept = next(r for r in stored() if r["retriever"] == "bm25")
     auc = next(
@@ -404,9 +410,11 @@ def test_the_default_comparison_is_not_overwritten_by_a_swept_one(store, capsys)
     ) == 0
     capsys.readouterr()
 
-    assert compare.main(["--dataset", "mind", "--window", "5"]) == 0
+    assert compare.main(
+        ["--dataset", "mind", "--window", "5", "--split", "tune"]
+    ) == 0
 
-    assert not (paths.ARTIFACTS_DIR / "comparison-validation.md").exists()
+    assert not (paths.ARTIFACTS_DIR / "comparison-tune.md").exists()
 
 
 def test_a_window_the_grid_never_ran_names_the_command_that_runs_it(store, capsys):

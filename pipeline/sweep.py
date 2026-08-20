@@ -449,9 +449,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--split",
-        default=evaluate.VALIDATION,
+        default=evaluate.TUNE,
         help=f"which split to sweep: {' or '.join(evaluate.SCORABLE)} "
-        f"(default: {evaluate.VALIDATION})",
+        f"(default: {evaluate.TUNE})",
     )
     parser.add_argument(
         "--resamples",

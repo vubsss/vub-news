@@ -1,8 +1,13 @@
-"""Temporal train/validation/test split, with the leakage guards it needs.
+"""Temporal train/tune/validation/test split, with the leakage guards it needs.
 
 The split is never random: an impression's label is a function of its timestamp
 and nothing else. Window sizes are the only thing that differs between datasets
 and they come from the registry, so nothing here knows which dataset it holds.
+
+Four partitions rather than the three SPEC.md describes, because selecting a
+parameter and reporting a result are different jobs and one partition cannot do
+both. `train` is what a model fits on, `tune` is where every parameter is
+chosen, `validation` is what gets reported, and `test` is held back for the end.
 """
 
 from __future__ import annotations
@@ -11,8 +16,9 @@ import pandas as pd
 
 from pipeline.datasets import DatasetConfig, SplitSpec
 
-TRAIN, VALIDATION, TEST = "train", "validation", "test"
-SPLITS = (TRAIN, VALIDATION, TEST)
+TRAIN, TUNE, VALIDATION, TEST = "train", "tune", "validation", "test"
+# In time order, which is what check_ordering and every report iterate in.
+SPLITS = (TRAIN, TUNE, VALIDATION, TEST)
 
 
 class SplitError(RuntimeError):
@@ -70,7 +76,7 @@ def check_leakage(
 
 
 def check_ordering(labelled: pd.DataFrame) -> None:
-    """Every train impression precedes every validation one, and so on.
+    """Every train impression precedes every tune one, and so on.
 
     This is the anti-gaming assertion: a random split, or an off-by-one in the
     boundaries, shows up here as partitions that overlap in time.
@@ -91,23 +97,46 @@ def check_ordering(labelled: pd.DataFrame) -> None:
 
 
 def assign(behaviors: pd.DataFrame, spec: SplitSpec) -> pd.DataFrame:
-    """Label every impression train, validation or test by its timestamp.
+    """Label every impression train, tune, validation or test by its timestamp.
 
     Boundaries land on calendar-day edges, so a partition is a whole number of
     days and the printed report reads the way the split is described.
+
+    The three held-out windows are measured back from the end of the log, so
+    adding the tune window moves only the train/tune boundary: validation and
+    test cover exactly the days they covered before it existed, and numbers
+    reported on them stay comparable across the change.
+
+    Bins are right-closed, so an impression landing exactly on a boundary
+    belongs to the *earlier* partition. That is arbitrary but it has to be
+    fixed: MIND has a single impression at exactly 2019-11-14 00:00:00, and a
+    row that changed sides between runs would silently move a population.
     """
     times = behaviors["impression_time"]
     end = times.max().normalize() + pd.Timedelta(days=1)
     test_start = end - pd.Timedelta(days=spec.test_days)
     val_start = test_start - pd.Timedelta(days=spec.val_days)
+    tune_start = val_start - pd.Timedelta(days=spec.tune_days)
+
+    # Each partition paired with the edge it ends at. A window of zero days is
+    # dropped rather than passed to pd.cut as a repeated edge, which it
+    # rejects -- so `tune_days=0` means "no tune split" instead of a crash, and
+    # a distribution long enough not to need one can say so in the registry.
+    edges = [times.min() - pd.Timedelta(days=1)]
+    labels: list[str] = []
+    for name, boundary in (
+        (TRAIN, tune_start),
+        (TUNE, val_start),
+        (VALIDATION, test_start),
+        (TEST, end),
+    ):
+        if boundary > edges[-1]:
+            edges.append(boundary)
+            labels.append(name)
 
     labelled = behaviors.copy()
     labelled["split"] = pd.Series(
-        pd.cut(
-            times,
-            bins=[times.min() - pd.Timedelta(days=1), val_start, test_start, end],
-            labels=[TRAIN, VALIDATION, TEST],
-        ).astype(str),
+        pd.cut(times, bins=edges, labels=labels).astype(str),
         index=behaviors.index,
         dtype="string",
     )

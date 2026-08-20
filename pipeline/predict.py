@@ -37,14 +37,13 @@ from tqdm import tqdm
 from pipeline import acquire, evaluate, paths, preprocess, retrieval
 from pipeline.datasets import DATASETS, DatasetConfig, TableSource
 
-# The retriever a submission is generated with unless one is named. Of the four
-# the harness can score, only three can be submitted: `fusion` reads a
-# click-count feature and a competition test file ships no clicks, which
-# `fusion.ranker` refuses rather than scoring a column of zeros under the name
-# of the model that was measured. Among the three, `fusion-serving` leads on
-# validation by disjoint intervals on both datasets, and it leads by most on
-# EB-NeRD, where the two content retrievers do not separate from chance.
-DEFAULT_RETRIEVER = "fusion-serving"
+# The retriever a submission is generated with unless one is named. Ticket 11
+# separated the two on MIND's validation split by disjoint bootstrap intervals
+# on every ranking metric the leaderboard reports — auc 0.6252 against 0.5597,
+# mrr 0.3297 against 0.2999, ndcg@5 0.3058 against 0.2712, ndcg@10 0.3642
+# against 0.3276, all favouring the semantic side. Submitting the lexical one
+# instead would be submitting the retriever we measured to be worse.
+DEFAULT_RETRIEVER = "ann"
 
 # Impressions read, ranked and written at a time. MINDlarge_test holds 2.37M of
 # them; one user vector per impression at 384 float32 is 3.6 GB before a single
@@ -116,7 +115,6 @@ def impressions(
     config: DatasetConfig,
     chunk_size: int = CHUNK,
     history_k: int = retrieval.HISTORY_K,
-    with_history: bool = True,
 ) -> Iterator[pd.DataFrame]:
     """The competition's test impressions, in file order, in chunks.
 
@@ -128,15 +126,9 @@ def impressions(
     the competition put it on the impression row or in a table of its own —
     which of the two is a registry field, and the only thing below that knows
     the difference is whether `spec.history` is there.
-
-    `with_history=False` skips that join. The fusion retriever makes one pass
-    over this file to count how often each article was shown before it ranks
-    anything, and that pass reads candidates and timestamps only — loading
-    808k users' reading histories for it would be several minutes and a
-    gigabyte spent on a column nothing in the pass looks at.
     """
     source = config.submission.impressions
-    clicks = _histories(config, history_k) if with_history else None
+    clicks = _histories(config, history_k)
     for name in source.files:
         for raw in _read(config, source, name, chunk_size):
             chunk = source.adapt(raw)

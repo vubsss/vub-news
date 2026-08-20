@@ -30,9 +30,8 @@ def ranked(rows):
 def behaviours(rows, split="validation", day="2019-11-14"):
     """rows: (impression_id, candidate_ids, labels)
 
-    The timestamp is there because the fusion retriever reads its popularity
-    features at it. One per split, ordered so that train precedes validation
-    precedes test, as the real temporal split guarantees.
+    One per split, ordered so that train precedes validation precedes test,
+    as the real temporal split guarantees.
     """
     return pd.DataFrame(
         {
@@ -584,8 +583,8 @@ def _store_of(store):
     ).to_parquet(store / "articles.parquet", index=False)
     pd.concat(
         [
-            # A train split too: the fusion retrievers fit on it, and a store
-            # without one would have them raise where the other two do not.
+            # A train split too, so the store has the shape the real one
+            # does and the harness is seen to score validation rather than it.
             behaviours(
                 [("t1", ["a1", "a2"], [1, 0]), ("t2", ["a1", "a2"], [0, 1])],
                 split="train",
@@ -661,13 +660,7 @@ def test_every_retriever_is_scored_by_the_same_code_path(store, capsys):
     """Ticket 9 asks for a result set per retriever with no retriever-specific
     path. The harness only ever calls rank_candidates, which every entry in
     RETRIEVERS exposes with the same signature — so this exercises the seam,
-    not the retrievers, and adding a fifth entry should need no change here.
-
-    Accuracy is asserted only for the two the toy store is rigged to separate.
-    The fusion pair are boosted trees fitted on this store's two-impression
-    train split, which is fewer rows than one leaf is allowed to hold — they
-    come back constant, and a constant ranking scoring 0.5 is the correct
-    answer rather than a failure to reach them.
+    not the retrievers, and adding a third entry should need no change here.
     """
     _store_of(store)
 
@@ -686,8 +679,7 @@ def test_every_retriever_is_scored_by_the_same_code_path(store, capsys):
             evaluate.METRICS
         )
         assert value_of(written, "coverage") == pytest.approx(1.0)
-        if retriever in ("bm25", "ann"):
-            assert value_of(written, "auc") == pytest.approx(1.0)
+        assert value_of(written, "auc") == pytest.approx(1.0)
 
 
 def test_the_build_stage_leaves_the_test_split_alone(store):

@@ -118,10 +118,9 @@ def mind_test_impressions(raw: pd.DataFrame) -> pd.DataFrame:
     and the history it needs comes from the same file, so one pass produces
     both rather than joining two adapters back together per chunk.
 
-    The timestamp comes through because the fusion retriever's popularity
-    features are read at it. The two content retrievers never look at it, and
-    carrying a column one of three consumers wants is cheaper than a second
-    adapter over the same file.
+    The timestamp comes through for parity with the EB-NeRD adapter below,
+    which reads one from its own file. Neither retriever looks at it: it costs
+    one column and keeps both competitions' test impressions the same shape.
     """
     return pd.DataFrame(
         {

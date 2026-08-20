@@ -224,9 +224,7 @@ def _store_of(store):
     ).to_parquet(store / "articles.parquet", index=False)
 
     # The two validation impressions the window tests are about, preceded by
-    # train impressions that exist so the fusion retriever has a split to fit
-    # on: it is registered like the other two, so the grid runs it, and a
-    # booster needs both classes present before it will fit at all.
+    # train impressions, so the store has the shape the real one does.
     train = [f"t{i}" for i in range(8)]
     pd.DataFrame(
         {

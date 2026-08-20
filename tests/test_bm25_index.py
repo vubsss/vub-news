@@ -150,7 +150,7 @@ def test_score_pairs_computes_exactly_what_score_candidates_does():
     """The two are the same arithmetic read out of two shapes of the index —
     `score_candidates` off a corpus-wide score vector, `score_pairs` off the
     transpose — and the feature layer uses the second only because the first
-    cannot be run at competition scale. If they ever disagree, every fusion
+    cannot be run at competition scale. If they ever disagree, every
     number is measured on a different BM25 from the one this project reports.
     """
     index = bm25_index.build(catalogue(), MIND)

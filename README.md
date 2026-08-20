@@ -417,8 +417,6 @@ pipeline/
   embed.py            article vectors, aligned to the catalogue and unit length
   ann_index.py        exact inner-product index, user vectors, recall@K
   retrieval.py        the ranked shape every retriever emits, and how it is scored
-  features.py         the lexical, semantic, behavioural and popularity columns, causally read
-  fusion.py           the re-ranker over those columns, in a full and a serving-only variant
   evaluate.py         ranking and beyond-accuracy metrics, sliced, with bootstrap intervals
   compare.py          lexical against semantic, both datasets, from the stored results
   sweep.py            the ablation grid over history windows, resumable, one file out

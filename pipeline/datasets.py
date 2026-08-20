@@ -178,6 +178,18 @@ class EmbeddingSpec:
     # different width would produce vectors that are not the model's. None
     # when kind == "provided" and nothing here does the encoding.
     max_tokens: int | None
+    # How the vectors' geometry is corrected before they are indexed: "none",
+    # "centre", "abtt:n" or "whiten". A registry decision rather than a stage
+    # one, exactly as `normalise` is.
+    #
+    # Raw transformer output occupies a narrow cone, so every pair of articles
+    # has a high cosine whatever they say and a retriever's signal rides as a
+    # residual on a shared offset. EB-NeRD's shipped mBERT vectors have a mean
+    # pairwise cosine of 0.95 and its semantic retriever scores at chance as a
+    # direct consequence; MIND's sentence-trained MiniLM sits at 0.06 and wants
+    # no correction. Which method to apply is chosen on the tune split -- the
+    # statistics themselves are fitted on the corpus, which is not a split.
+    postprocess: str = "none"
 
 
 @dataclass(frozen=True)

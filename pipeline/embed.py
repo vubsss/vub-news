@@ -169,6 +169,130 @@ def normalise(matrix: np.ndarray) -> np.ndarray:
     return np.divide(matrix, norms, out=np.zeros_like(matrix), where=norms > 0)
 
 
+# Rows sampled when measuring geometry. The statistic is a mean over pairs, so
+# it costs the square of this; 3,000 rows is 9M pairs, which is milliseconds,
+# and the sample error at that size is far below the difference the statistic
+# exists to show (0.06 against 0.95).
+ANISOTROPY_SAMPLE = 3_000
+ANISOTROPY_SEED = 0
+
+
+def anisotropy(matrix: np.ndarray, sample: int = ANISOTROPY_SAMPLE) -> float:
+    """Mean cosine between two different rows drawn from this matrix.
+
+    Near 0 means the vectors point in all directions and a cosine between two
+    of them is informative. Near 1 means they occupy a narrow cone, every pair
+    looks alike whatever the articles say, and the real signal is a rounding
+    error riding on a large constant -- which is what EB-NeRD's shipped mBERT
+    vectors do, and why its semantic retriever ranks at chance.
+
+    The diagonal is excluded: a row's cosine with itself is 1 by construction
+    and counting it would report a floor of 1/n rather than anything about the
+    cloud. Zero rows -- articles `align` found no vector for -- are dropped
+    too, since they are an absence rather than a direction.
+
+    Sampled on a large corpus, and seeded, because a figure printed in a build
+    log that moved between runs would read as the vectors having changed.
+    """
+    rows = matrix[np.linalg.norm(matrix, axis=1) > 0]
+    if len(rows) < 2:
+        return 0.0
+    if len(rows) > sample:
+        rng = np.random.default_rng(ANISOTROPY_SEED)
+        rows = rows[rng.choice(len(rows), sample, replace=False)]
+
+    unit = normalise(rows.astype("float32"))
+    similarity = unit @ unit.T
+    off_diagonal = ~np.eye(len(unit), dtype=bool)
+    return float(similarity[off_diagonal].mean())
+
+
+# Post-processing methods. `abtt` takes a component count after a colon.
+POSTPROCESS = ("none", "centre", "abtt", "whiten")
+
+# Rows the whitening and component estimates are fitted on. The statistics are
+# a property of the corpus, so they are fitted over the corpus -- but a corpus
+# of 125,541 vectors does not need all of them to estimate a mean and a handful
+# of principal directions.
+FIT_SAMPLE = 20_000
+
+
+def _fit_rows(matrix: np.ndarray) -> np.ndarray:
+    """The non-zero rows the statistics are estimated from, sampled and seeded.
+
+    Zero rows are excluded: they are articles the artifact had no vector for,
+    and averaging an absence into the mean would drag the correction toward a
+    direction no article actually points in.
+    """
+    rows = matrix[np.linalg.norm(matrix, axis=1) > 0]
+    if len(rows) > FIT_SAMPLE:
+        rng = np.random.default_rng(ANISOTROPY_SEED)
+        rows = rows[rng.choice(len(rows), FIT_SAMPLE, replace=False)]
+    return rows.astype("float32")
+
+
+def postprocess(matrix: np.ndarray, method: str) -> np.ndarray:
+    """Correct the geometry of an embedding matrix, then rescale to unit length.
+
+    Raw transformer output occupies a narrow cone rather than a ball: every
+    pair of vectors has a high cosine whatever the two articles say, so the
+    signal a retriever needs rides as a small residual on a large shared
+    offset. These are the standard training-free corrections for that.
+
+        none     leave the vectors as they arrived
+        centre   subtract the corpus mean, which removes the shared offset
+        abtt:n   all-but-the-top: the mean, then the n leading principal
+                 directions. mBERT's anisotropy is distributed rather than
+                 concentrated in a few outlier dimensions, so clipping
+                 dimensions does not work and n is a real choice
+        whiten   decorrelate the covariance, which is the strongest of the
+                 four and the one that also equalises the variances
+
+    Whatever is chosen, an article that had no vector keeps its zero row: a
+    zero row never wins a comparison, whereas a centred one would point away
+    from everything, which is a confident claim about an article nothing is
+    known about.
+    """
+    name, _, argument = method.partition(":")
+    if name not in POSTPROCESS:
+        raise EmbeddingError(
+            f"unknown embedding post-processing {method!r}; use one of: "
+            f"{', '.join(POSTPROCESS)} (abtt takes a component count, e.g. "
+            f"abtt:3)"
+        )
+    if name == "none":
+        return matrix
+
+    present = np.linalg.norm(matrix, axis=1) > 0
+    fitted = _fit_rows(matrix)
+    if len(fitted) < 2:
+        return matrix
+
+    centred = matrix.astype("float32") - fitted.mean(axis=0)
+
+    if name == "abtt":
+        components = int(argument) if argument else 1
+        # Estimated on the centred sample, so they are directions of variation
+        # rather than of the offset that has already been removed.
+        _, _, directions = np.linalg.svd(
+            fitted - fitted.mean(axis=0), full_matrices=False
+        )
+        top = directions[:components]
+        centred = centred - (centred @ top.T) @ top
+    elif name == "whiten":
+        sample = fitted - fitted.mean(axis=0)
+        covariance = np.cov(sample, rowvar=False)
+        values, vectors = np.linalg.eigh(covariance)
+        # Guard the small eigenvalues: dividing by one near zero amplifies a
+        # direction that is noise, which un-corrects what this is here to fix.
+        scale = 1.0 / np.sqrt(np.maximum(values, 1e-8))
+        centred = centred @ (vectors * scale) @ vectors.T
+
+    corrected = normalise(centred.astype("float32"))
+    corrected[~present] = 0.0
+    return corrected
+
+
 def check_unit_norm(matrix: np.ndarray, config: DatasetConfig) -> None:
     """Every non-zero row must have length one, whoever produced it.
 
@@ -268,12 +392,24 @@ def build(articles: pd.DataFrame, config: DatasetConfig) -> tuple[Embeddings, di
     matrix, missing = align(source_ids, source_vectors, corpus_ids, spec.dim)
     if spec.normalise:
         matrix = normalise(matrix)
+
+    # Measured before the correction as well as after, so the build log says
+    # what the source vectors were like and not only what they became.
+    before = anisotropy(matrix)
+    matrix = postprocess(matrix, spec.postprocess)
     check_unit_norm(matrix, config)
 
     embeddings = Embeddings(
         vectors=matrix, article_ids=corpus_ids.to_numpy(dtype=object)
     )
-    report = {"articles": len(corpus_ids), "dim": spec.dim, "missing": missing}
+    report = {
+        "articles": len(corpus_ids),
+        "dim": matrix.shape[1],
+        "missing": missing,
+        "postprocess": spec.postprocess,
+        "anisotropy_before": before,
+        "anisotropy_after": anisotropy(matrix),
+    }
     return embeddings, report
 
 
@@ -425,6 +561,12 @@ def run(config: DatasetConfig, force: bool = False) -> None:
     print(
         f"    {report['articles']:,} articles x {report['dim']} dimensions "
         f"from {config.embeddings.model}"
+    )
+    print(
+        f"    anisotropy {report['anisotropy_before']:.4f} -> "
+        f"{report['anisotropy_after']:.4f} under {report['postprocess']} "
+        f"(mean cosine between two articles; near 0 is informative, near 1 "
+        f"means every pair looks alike)"
     )
     if report["missing"]:
         # Named rather than summarised: these articles keep a zero row, so they

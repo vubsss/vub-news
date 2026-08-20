@@ -19,9 +19,6 @@ import pandas as pd
 from pipeline import preprocess, retrieval
 from pipeline.datasets import DatasetConfig
 
-# SPEC's BM25 parameters. Language-agnostic, so they are not registry entries.
-K1, B = 1.5, 0.75
-
 # The article ids, saved next to the bm25s index, which does not store them.
 ARTICLE_IDS = "article_ids.npy"
 
@@ -314,7 +311,7 @@ def build(articles: pd.DataFrame, config: DatasetConfig) -> Index:
     English words and nothing else. Queries are split the same way.
     """
     text = articles["lexical_text"].fillna("")
-    bm25 = bm25s.BM25(k1=K1, b=B)
+    bm25 = bm25s.BM25(k1=config.lexical.k1, b=config.lexical.b)
     bm25.index([document.split() for document in text], show_progress=False)
     return Index(bm25=bm25, article_ids=articles["article_id"].to_numpy(dtype=object))
 

@@ -154,6 +154,33 @@ class SplitSpec:
 
 
 @dataclass(frozen=True)
+class LexicalSpec:
+    """BM25's parameters, per dataset.
+
+    `k1` controls term-frequency saturation and `b` document-length
+    normalisation. Both were module constants copied from SPEC.md and never
+    measured, which matters more here than it usually would: these documents
+    are a title plus an abstract, and 5% of MIND and 8% of EB-NeRD have no
+    abstract at all, so the corpus is far shorter than the ones the defaults
+    were chosen against.
+
+    `title_weight` repeats the title's tokens when the indexed text is built.
+    Concatenating title and abstract into one bag -- which is what this
+    pipeline did -- scores a term in a six-word title exactly as it scores one
+    in a forty-word abstract, and in news the title carries most of the signal.
+    Repetition is an approximation of BM25F rather than BM25F itself: it
+    weights the term frequency before saturation, which is the mechanism, but
+    it also lengthens the document, which real per-field normalisation would
+    not. Said plainly here because `bm25s` indexes one field and cannot express
+    the exact form.
+    """
+
+    k1: float
+    b: float
+    title_weight: int = 1
+
+
+@dataclass(frozen=True)
 class EmbeddingSpec:
     # "generate": produced by a notebook on a hosted GPU, fetched as an
     # artifact. "provided": ships with the dataset.
@@ -244,6 +271,7 @@ class DatasetConfig:
     language: str
     raw: RawSpec
     split: SplitSpec
+    lexical: LexicalSpec
     sources: SourceSpec
     columns: ColumnMap
     embeddings: EmbeddingSpec
@@ -296,6 +324,8 @@ MIND = DatasetConfig(
     # day for tuning still leaves train four times the size of any other
     # partition.
     split=SplitSpec(tune_days=1, val_days=1, test_days=1),
+    # SPEC.md's values, and never measured -- phase 3 sweeps them on tune.
+    lexical=LexicalSpec(k1=1.5, b=0.75),
     sources=SourceSpec(
         articles=TableSource(
             files=("train/news.tsv", "dev/news.tsv"),
@@ -481,6 +511,8 @@ EBNERD = DatasetConfig(
     # days to tune on, which is the smallest window that still holds enough
     # impressions to separate two configurations.
     split=SplitSpec(tune_days=2, val_days=3, test_days=3),
+    # SPEC.md's values, and never measured -- phase 3 sweeps them on tune.
+    lexical=LexicalSpec(k1=1.5, b=0.75),
     sources=SourceSpec(
         articles=TableSource(
             files=("articles.parquet",),

@@ -160,11 +160,29 @@ def test_provided_vectors_arrive_with_their_ids_as_strings(tree):
     dtype mismatch."""
     write_provided()
 
-    ids, vectors = embed.read_source(EBNERD)
+    ids, vectors = embed.read_source(plain())
 
     assert list(ids) == ["3001353", "3003065"]
     assert vectors.dtype == np.dtype("float32")
     assert vectors.tolist() == [[1.0, 2.0], [3.0, 4.0]]
+
+
+def plain():
+    """EB-NeRD configured the way these tests were written against: the source
+    scaled here, and no geometry correction.
+
+    The registry's own settings are chosen by measurement on the tune split and
+    are expected to move -- EB-NeRD now indexes word2vec, which ships at unit
+    length and is corrected with abtt:1. Tests about alignment, caching and
+    forcing must not fail when that choice changes, so they pin the two fields
+    they depend on and nothing else.
+    """
+    return dataclasses.replace(
+        EBNERD,
+        embeddings=dataclasses.replace(
+            EBNERD.embeddings, normalise=True, postprocess="none"
+        ),
+    )
 
 
 def vec(*values):
@@ -189,14 +207,9 @@ def test_build_puts_the_corpus_in_charge_of_rows_and_hands_back_one_interface(tr
                    ids=(1, 2, 9))
     articles = pd.DataFrame({"article_id": pd.Series(["2", "1"], dtype="string")})
 
-    # Geometry correction pinned off: this is about which row an article lands
-    # on, and asserting exact vector values is only how that is shown. Left on
-    # the registry's own setting the test would fail whenever the tune split
-    # chose a different correction, which says nothing about alignment.
-    config = dataclasses.replace(
-        EBNERD, embeddings=dataclasses.replace(EBNERD.embeddings, postprocess="none")
-    )
-    embeddings, report = embed.build(articles, config)
+    # This is about which row an article lands on; the exact vector values are
+    # only how that is shown. See `plain`.
+    embeddings, report = embed.build(articles, plain())
 
     assert list(embeddings.article_ids) == ["2", "1"]
     assert embeddings.index == {"2": 0, "1": 1}
@@ -258,10 +271,10 @@ def test_a_reloaded_matrix_holds_the_same_vectors_against_the_same_ids(tree):
     since the ids are the whole reason a row means anything."""
     write_provided(vectors=(vec(3.0, 4.0), vec(0.0, 5.0)), ids=(1, 2))
     articles = pd.DataFrame({"article_id": pd.Series(["2", "1"], dtype="string")})
-    built, _ = embed.build(articles, EBNERD)
+    built, _ = embed.build(articles, plain())
 
-    built.save(embed.output_dir(EBNERD))
-    reloaded = embed.load(EBNERD)
+    built.save(embed.output_dir(plain()))
+    reloaded = embed.load(plain())
 
     assert list(reloaded.article_ids) == list(built.article_ids)
     assert reloaded.index == built.index
@@ -315,14 +328,14 @@ def test_run_writes_the_matrix_and_reports_what_it_holds(tree, capsys):
     write_provided(vectors=(vec(3.0, 4.0), vec(0.0, 5.0)), ids=(1, 2))
     write_corpus(EBNERD, ["2", "1", "absent"])
 
-    embed.run(EBNERD)
+    embed.run(plain())
 
     printed = capsys.readouterr().out
     assert "3 articles" in printed
     assert str(EBNERD.embeddings.dim) in printed
     # The third article has no vector; reported, not dropped.
     assert "1 article(s) have no vector" in printed
-    assert list(embed.load(EBNERD).article_ids) == ["2", "1", "absent"]
+    assert list(embed.load(plain()).article_ids) == ["2", "1", "absent"]
 
 
 def test_a_second_run_reuses_the_saved_matrix_instead_of_the_source(tree, capsys):
@@ -332,13 +345,13 @@ def test_a_second_run_reuses_the_saved_matrix_instead_of_the_source(tree, capsys
     it is not being read."""
     source = write_provided(vectors=(vec(3.0, 4.0),), ids=(1,))
     write_corpus(EBNERD, ["1"])
-    embed.run(EBNERD)
+    embed.run(plain())
     source.unlink()
 
-    embed.run(EBNERD)
+    embed.run(plain())
 
     assert "loaded from" in capsys.readouterr().out
-    assert embed.load(EBNERD).vectors[0][:2].tolist() == pytest.approx([0.6, 0.8])
+    assert embed.load(plain()).vectors[0][:2].tolist() == pytest.approx([0.6, 0.8])
 
 
 def test_forcing_the_stage_rederives_the_matrix_it_would_otherwise_reuse(tree):
@@ -346,9 +359,9 @@ def test_forcing_the_stage_rederives_the_matrix_it_would_otherwise_reuse(tree):
     corpus change would quietly keep vectors aligned to the old catalogue."""
     write_provided(vectors=(vec(3.0, 4.0),), ids=(1,))
     write_corpus(EBNERD, ["1"])
-    embed.run(EBNERD)
+    embed.run(plain())
 
     write_provided(vectors=(vec(0.0, 5.0),), ids=(1,))
-    embed.run(EBNERD, force=True)
+    embed.run(plain(), force=True)
 
-    assert embed.load(EBNERD).vectors[0][:2].tolist() == pytest.approx([0.0, 1.0])
+    assert embed.load(plain()).vectors[0][:2].tolist() == pytest.approx([0.0, 1.0])

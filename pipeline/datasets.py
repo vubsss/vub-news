@@ -536,40 +536,46 @@ EBNERD = DatasetConfig(
     ),
     embeddings=EmbeddingSpec(
         kind="provided",
-        model="google_bert_base_multilingual_cased",
-        dim=768,
-        artifact="embeddings/bert_base_multilingual_cased.parquet",
+        model="document_vector",
+        dim=300,
+        artifact="embeddings/document_vector.parquet",
         gdrive_file_id=None,
-        # The shipped vectors are raw BERT output with norms around 12.4, not
-        # unit length. Normalised here so an inner product is a cosine, as it
-        # is for MIND: ticket 8 indexes both with faiss IndexFlatIP, and on
-        # unnormalised vectors that ranks by magnitude as much as by direction,
-        # which would make the two datasets' recall figures measure different
-        # things and leave magnitude as a free variable in ticket 11's
-        # lexical-versus-semantic comparison.
-        normalise=True,
-        # Nothing encodes for EB-NeRD; the vectors arrive already made.
+        # Ships at unit length already: a vector someone expected a cosine to
+        # be taken of.
+        normalise=False,
         max_tokens=None,
-        # Chosen on the tune split over {none, centre, abtt:1/3/5/10, whiten},
-        # 66,908 impressions. The shipped vectors rank at chance because they
-        # occupy a narrow cone; removing the mean and three principal
-        # directions is what makes an inner product between two of them mean
-        # anything:
+        # Source and correction chosen together on the tune split, over all
+        # four artifacts EB-NeRD ships x six corrections. Best per source:
         #
-        #   none 0.4877   centre 0.5199   abtt:1 0.5409   abtt:3 0.5477
-        #   abtt:5 0.5441  abtt:10 0.5322  whiten 0.5216
+        #   document_vector    300  abtt:1  0.5665   <- this one
+        #   xlm_roberta_base   768  abtt:1  0.5646
+        #   contrastive_vector 768  abtt:1  0.5602
+        #   mbert              768  abtt:3  0.5477   <- what the pipeline used
         #
-        # Note the peak is not where the geometry is best. Anisotropy falls
-        # monotonically across that row -- whiten reaches 0.0001, the most
-        # isotropic of the seven -- while AUC turns over at three components.
-        # Past that the correction is removing signal along with the offset,
-        # so the statistic diagnoses the problem and does not pick the fix.
-        postprocess="abtt:3",
+        # word2vec at 300 dimensions beats three transformer encoders at 768,
+        # which is worth stating plainly rather than burying: on headlines and
+        # subtitles a few dozen words long, a bag of trained word vectors is
+        # not obviously the weaker representation, and nothing here had ever
+        # measured the assumption that it was.
+        #
+        # See artifacts/embeddings-tune.md, regenerate with
+        # `python -m pipeline.embed_compare --dataset ebnerd`.
+        postprocess="abtt:1",
     ),
     # The three other vector sources EB-NeRD ships, all covering the same
     # 125,541 articles as the one above. Two of them arrive already unit
     # length, which is itself a signal about what they were prepared for.
     embedding_variants=(
+        EmbeddingSpec(
+            kind="provided",
+            model="google_bert_base_multilingual_cased",
+            dim=768,
+            artifact="embeddings/bert_base_multilingual_cased.parquet",
+            gdrive_file_id=None,
+            # Raw encoder output, norms around 12.4.
+            normalise=True,
+            max_tokens=None,
+        ),
         EmbeddingSpec(
             kind="provided",
             model="contrastive_vector",

@@ -253,8 +253,33 @@ on validation. Nothing is established either way on MIND, and that is the honest
 
 EB-NeRD ships **four** sets of article vectors and the pipeline can index one. Which one was never
 measured — the multilingual BERT file was taken because it is the one the assignment's download
-snippet names, and it is the one whose geometry is broken. So every source is scored under every
-correction:
+snippet names. Scoring all four under all six corrections on the tune split says it was the worst of
+them, at more than twice the dimensionality of the best:
+
+| source | dim | best correction | auc | anisotropy as shipped |
+|---|---:|---|---:|---:|
+| **document_vector** (word2vec) | **300** | abtt:1 | **0.5665** | +0.7907 |
+| xlm_roberta_base | 768 | abtt:1 | 0.5646 | +0.9990 |
+| contrastive_vector | 768 | abtt:1 | 0.5602 | +0.1850 |
+| bert_base_multilingual_cased | 768 | abtt:3 | 0.5477 | +0.9491 |
+
+**word2vec, at 300 dimensions, beats three transformer encoders at 768.** On headlines and subtitles
+a few dozen words long a bag of trained word vectors is not obviously the weaker representation, and
+nothing in this pipeline had ever measured the assumption that it was. It is also three times cheaper
+to query — 0.12 ms against 0.35 ms — and half the index.
+
+Two more things that only four sources could show. **Contrastive training really does fix the
+geometry**: those vectors ship at 0.1850 while every other source is between 0.79 and 0.999, which is
+what contrastive training is for. They still gain from correction (0.5332 to 0.5602) and they still
+do not win. And **`whiten` is the worst correction for all four sources** while producing the best
+geometry for all four — the clearest possible statement that the statistic is a diagnosis and not a
+prescription.
+
+On validation the promoted choice gives auc **0.5672 [0.5652, 0.5692]**, against 0.5500 for corrected
+mBERT and 0.4984 for the vectors the pipeline started with. Tune predicted 0.5665 and validation
+returned 0.5672, which is the replication MIND's marginal effect did not manage.
+
+Every source is scored under every correction by:
 
 ```bash
 python -m pipeline.embed_compare --dataset ebnerd

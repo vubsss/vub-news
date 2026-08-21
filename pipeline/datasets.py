@@ -390,7 +390,11 @@ MIND = DatasetConfig(
     # SPEC.md's values, and never measured -- phase 3 sweeps them on tune.
     lexical=LexicalSpec(k1=2.0, b=0.9, title_weight=3, query_abstract=True),
     weighting=WeightingSpec(),
-    hybrid=HybridSpec(),
+    # Chosen on tune: +0.0035 AUC [+0.0023, +0.0046] over ann, the better
+    # parent. RRF lost at every k from 1 to 300 because it weights both
+    # parents equally and cannot say one is 0.05 AUC weaker; alpha can, and
+    # 0.3 lexical is where it lands.
+    hybrid=HybridSpec(rule="linear", alpha=0.3),
     sources=SourceSpec(
         articles=TableSource(
             files=("train/news.tsv", "dev/news.tsv"),
@@ -590,7 +594,11 @@ EBNERD = DatasetConfig(
     # alike, at every constant swept -- so what carries signal here is not when
     # a click happened but how hard it was read. MIND has no counterpart.
     weighting=WeightingSpec(scheme="engagement"),
-    hybrid=HybridSpec(),
+    # The tune argmax among genuinely fused cells, and it does **not** beat
+    # ann alone: -0.0005 [-0.0011, +0.0002], an interval containing zero. Kept
+    # on the same rule as MIND so the contrast between the two is about alpha
+    # rather than about which rule ran, and reported as the tie it is.
+    hybrid=HybridSpec(rule="linear", alpha=0.15),
     sources=SourceSpec(
         articles=TableSource(
             files=("articles.parquet",),

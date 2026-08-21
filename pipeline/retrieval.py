@@ -17,6 +17,24 @@ import pandas as pd
 # Swept in ticket 12.
 HISTORY_K = 10
 
+# How an impression's per-click similarities become one score per candidate.
+#
+#   mean  the profile every retriever shipped with: the user is the average of
+#         what they read. Lossy in a known way -- someone who reads football
+#         and recipes averages to someone who reads neither.
+#   max   does this candidate look like *any* recent click, which survives a
+#         history that mixes unrelated interests.
+#   last  does it follow from the most recent click, which is the session
+#         signal rather than the standing interest.
+#
+# The three are one operation with three aggregators, over the same last-K
+# clicks: score = AGG_i (candidate . click_i). That matters for `mean`, where
+# the mean of the dot products is the dot product with the mean vector, so the
+# pooled-vector path and this one rank identically and corpus retrieval can
+# keep using the cheap one.
+POOLINGS = ("mean", "max", "last")
+POOLING = "mean"
+
 # Retrieval depths reported. Retrieval runs once at the deepest; the shallower
 # figures are prefixes of the same ranking.
 DEPTHS = (50, 100, 200)

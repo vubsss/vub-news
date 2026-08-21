@@ -410,23 +410,54 @@ def retrieve_corpus(
     return ranked, asked
 
 
+def window_for(history_k: int, pooling: str) -> int:
+    """The history window this pooling leaves BM25 with.
+
+    A bag of terms has no aggregator to vary — the query is one document
+    however it was assembled — so what pooling means on the lexical side is how
+    much of the history goes into that bag. `mean` reads the last K clicks;
+    `last` reads only the most recent, which is the same query at K=1.
+
+    `max` has no lexical form at all. Scoring a candidate against each clicked
+    title separately and keeping the best is a different retriever, not a
+    different query, and quietly returning the `mean` query instead would put a
+    row in a sweep whose label did not describe what ran.
+    """
+    if pooling not in retrieval.POOLINGS:
+        raise ValueError(
+            f"unknown pooling {pooling!r}, expected one of "
+            f"{', '.join(retrieval.POOLINGS)}"
+        )
+    if pooling == "max":
+        raise ValueError(
+            "bm25 cannot express 'max' pooling: a bag of terms has no "
+            "per-click aggregator. Sweep it on the semantic retriever only."
+        )
+    return 1 if pooling == "last" else history_k
+
+
 def rank_candidates(
     config: DatasetConfig,
     behaviors: pd.DataFrame,
     history: pd.DataFrame,
     history_k: int = retrieval.HISTORY_K,
+    pooling: str = retrieval.POOLING,
 ) -> pd.DataFrame:
     """Score each impression's own candidates. The harness's only entry here.
 
     ann_index exposes the same function with the same signature, which is what
-    lets the harness score both retrievers without knowing which it holds.
+    lets the harness score both retrievers without knowing which it holds — and
+    what stops a sweep handing the two of them different windows or different
+    poolings while reporting one cell.
     """
     articles = pd.read_parquet(config.feature_store_dir / "articles.parquet")
     index = load(config.artifacts_dir / "bm25")
 
     wanted = set(behaviors["impression_id"])
     clicks = history[history["impression_id"].isin(wanted)]
-    queries, _ = build_queries(clicks, articles, config, history_k)
+    queries, _ = build_queries(
+        clicks, articles, config, window_for(history_k, pooling)
+    )
 
     # Looked up by id rather than zipped: the history frame is filtered from a
     # larger one and need not arrive in the behaviours frame's order, and a

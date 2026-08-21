@@ -86,6 +86,45 @@ def build_user_vectors(
 
 
 @dataclass(frozen=True)
+class Clicks:
+    """Per impression, the embedding rows of its last K resolvable clicks.
+
+    What `build_user_vectors` pools into one vector, kept unpooled — because
+    `max` and `last` are not expressible as a single vector and a mean is. The
+    rows are already restricted to clicks the catalogue has a vector for, and
+    already truncated to the window, so the aggregator sees exactly the clicks
+    the profile would have averaged.
+    """
+
+    impression_ids: list[str]
+    rows: list[np.ndarray]
+
+
+def build_clicks(
+    history: pd.DataFrame,
+    embeddings: embed.Embeddings,
+    history_k: int = retrieval.HISTORY_K,
+) -> Clicks:
+    """The same clicks `build_user_vectors` averages, before it averages them.
+
+    A click the catalogue has no vector for is dropped rather than carried as
+    a zero row, which is what the mean does too: a user with unknown clicks is
+    one we know less about, not one with different interests.
+    """
+    row_of = embeddings.index
+    rows = [
+        np.array(
+            [row_of[click] for click in clicks[-history_k:] if click in row_of],
+            dtype="int64",
+        )
+        for clicks in history["click_history"]
+    ]
+    return Clicks(
+        impression_ids=list(history["impression_id"].astype("string")), rows=rows
+    )
+
+
+@dataclass(frozen=True)
 class Index:
     """An exact inner-product index over one dataset's article embeddings.
 
@@ -169,6 +208,64 @@ class Index:
         )
 
 
+    def score_candidates_pooled(
+        self, clicks: Clicks, candidates: list[list[str]], pooling: str
+    ) -> pd.DataFrame:
+        """Rank an impression's candidates by an aggregator over its clicks.
+
+        `score = AGG_i (candidate . click_i)`, which is the one form all three
+        poolings share. `mean` is here for completeness and to be checked
+        against the pooled-vector path rather than assumed equal to it: the
+        mean of the dot products is the dot product with the mean, so the two
+        rank identically even though the pooled path rescales to unit length.
+
+        Only the re-ranking path offers this. Corpus retrieval keeps the
+        pooled vector, because a max over K clicks against the whole catalogue
+        is K searches rather than one, and recall@K must stay a measurement of
+        the same thing across every cell of a sweep.
+        """
+        if pooling not in retrieval.POOLINGS:
+            raise ValueError(
+                f"unknown pooling {pooling!r}, expected one of "
+                f"{', '.join(retrieval.POOLINGS)}"
+            )
+        row_of = self.embeddings.index
+        ranked_ids: list[list[str]] = []
+        scores: list[list[float]] = []
+
+        for rows, impression in zip(clicks.rows, candidates, strict=True):
+            found = np.zeros(len(impression), dtype="float32")
+            candidate_rows = np.array(
+                [row_of.get(candidate, -1) for candidate in impression]
+            )
+            known = candidate_rows >= 0
+            if len(rows) and known.any():
+                # (candidates x clicks): every candidate against every click.
+                similarity = (
+                    self.embeddings.vectors[candidate_rows[known]]
+                    @ self.embeddings.vectors[rows].T
+                )
+                if pooling == "mean":
+                    found[known] = similarity.mean(axis=1)
+                elif pooling == "max":
+                    found[known] = similarity.max(axis=1)
+                else:
+                    # The window is a suffix of the history in click order, so
+                    # the most recent click is its last column.
+                    found[known] = similarity[:, -1]
+            order = np.argsort(-found, kind="stable")
+            ranked_ids.append([impression[position] for position in order])
+            scores.append([float(found[position]) for position in order])
+
+        return pd.DataFrame(
+            {
+                "impression_id": clicks.impression_ids,
+                "ranked_ids": ranked_ids,
+                "scores": scores,
+            }
+        )
+
+
 def build(embeddings: embed.Embeddings) -> Index:
     """Index every article vector for exact inner-product search.
 
@@ -240,6 +337,11 @@ def retrieve_corpus(
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     """Rank the whole catalogue per impression: what recall@K is measured on.
 
+    Takes no pooling and never will. A max over K clicks against the whole
+    catalogue is K searches rather than one, and recall@K has to keep measuring
+    the same thing in every cell of a sweep — so this is always the pooled mean
+    vector, and the sweep's document says so where the recall column appears.
+
     The other half of the pair below. `rank_candidates` reorders the candidates
     an impression already carries; this one searches the corpus, which is the
     only one of the two a retrieval depth means anything to — a candidate list
@@ -264,26 +366,29 @@ def rank_candidates(
     behaviors: pd.DataFrame,
     history: pd.DataFrame,
     history_k: int = retrieval.HISTORY_K,
+    pooling: str = retrieval.POOLING,
 ) -> pd.DataFrame:
     """Score each impression's own candidates. The harness's only entry here.
 
     bm25_index exposes the same function with the same signature, which is what
-    lets the harness score both retrievers without knowing which it holds.
+    lets the harness score both retrievers without knowing which it holds — and
+    what stops a sweep handing the two of them different windows or different
+    poolings while reporting one cell.
     """
     embeddings = embed.load(config)
     index = build(embeddings)
 
     wanted = set(behaviors["impression_id"])
-    clicks = history[history["impression_id"].isin(wanted)]
-    queries, _ = build_user_vectors(clicks, embeddings, history_k)
+    history = history[history["impression_id"].isin(wanted)]
+    clicks = build_clicks(history, embeddings, history_k)
 
     # Looked up by id rather than zipped: the history frame is filtered from a
     # larger one and need not arrive in the behaviours frame's order, and a
     # positional pairing would score each impression against another's
     # candidates while looking entirely well-formed.
     candidates_of = dict(zip(behaviors["impression_id"], behaviors["candidate_ids"]))
-    candidates = [candidates_of[i] for i in queries.impression_ids]
-    return index.score_candidates(queries, candidates)
+    candidates = [candidates_of[i] for i in clicks.impression_ids]
+    return index.score_candidates_pooled(clicks, candidates, pooling)
 
 
 @dataclass(frozen=True)

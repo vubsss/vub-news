@@ -564,7 +564,11 @@ EBNERD = DatasetConfig(
     split=SplitSpec(tune_days=2, val_days=3, test_days=3),
     # SPEC.md's values, and never measured -- phase 3 sweeps them on tune.
     lexical=LexicalSpec(k1=2.0, b=0.9, title_weight=2, query_abstract=True),
-    weighting=WeightingSpec(),
+    # Chosen on tune in phase 4: +0.0025 AUC [+0.0013, +0.0036] over uniform,
+    # paired, at k=80. Every recency scheme lost -- position and time decay
+    # alike, at every constant swept -- so what carries signal here is not when
+    # a click happened but how hard it was read. MIND has no counterpart.
+    weighting=WeightingSpec(scheme="engagement"),
     sources=SourceSpec(
         articles=TableSource(
             files=("articles.parquet",),

@@ -14,8 +14,18 @@ import pandas as pd
 
 # The click-history window a query is built from. The same for both
 # retrievers, or their recall figures are answering different questions.
-# Swept in ticket 12.
-HISTORY_K = 10
+#
+# Chosen on tune in phase 4, jointly with the pooling, and the largest single
+# effect the project has measured: k=10 to k=80 is worth +0.0182 AUC for MIND's
+# semantic retriever and +0.0263 for EB-NeRD's, paired by impression, against
+# +0.001 for the whole of phase 3's lexical parameter grid. One constant rather
+# than a registry field because both datasets and both retrievers chose the
+# same value, monotonically, with no cell of either grid dissenting.
+#
+# It is the *largest window tested*, and every marginal was still rising there,
+# so this is a boundary rather than an optimum -- the same defect the sweep it
+# replaces had. Raising it past sources.ENGAGEMENT_WINDOW needs a re-ingest.
+HISTORY_K = 80
 
 # How an impression's per-click similarities become one score per candidate.
 #

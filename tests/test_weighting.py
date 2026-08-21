@@ -242,3 +242,25 @@ def test_the_weighted_query_repeats_a_recent_title_more_than_an_old_one():
     terms = queries["query"][0].split()
 
     assert terms.count("bears") > terms.count("sharks")
+
+
+# --- the submission path cannot silently disagree with the measurement ------
+
+
+def test_the_submission_path_refuses_a_scheme_it_cannot_express():
+    """`predict` streams the competition's history table, which carries click
+    ids alone. A scheme reading an engagement column is measurable on the
+    feature store and not reproducible on the submission — and the gap is
+    invisible in the output, because the file would be well-formed, correctly
+    ordered, and produced by a different model from the one every reported
+    number came from."""
+    with pytest.raises(weighting.WeightingError, match="cannot express"):
+        ann_index.require_expressible(
+            weighted(EBNERD, scheme="engagement")
+        )
+
+
+def test_a_scheme_needing_no_extra_column_passes_the_submission_check():
+    """position reads the order of the ids, which the streamed history has."""
+    for scheme in ("uniform", "position"):
+        ann_index.require_expressible(weighted(EBNERD, scheme=scheme))

@@ -85,6 +85,29 @@ def build_user_vectors(
     ), report
 
 
+def require_expressible(config: DatasetConfig) -> None:
+    """That the submission path can rank the way the registry says to.
+
+    `predict` streams the competition's own history table, which carries click
+    ids alone — no timestamps, no read time, no scroll. A weighting scheme that
+    reads one of those columns is measurable on the feature store and not
+    reproducible on the submission, and the gap is invisible in the output: the
+    file would be well-formed, correctly ordered, and produced by a different
+    model from the one every reported number came from.
+
+    So it raises, and phase 9 has to either carry the columns through the
+    streaming path or submit under a scheme that needs none.
+    """
+    if config.weighting.scheme in ("time", "engagement"):
+        raise weighting.WeightingError(
+            f"{config.name} is configured to weight clicks by "
+            f"{config.weighting.scheme!r}, which the submission path cannot "
+            f"express: the streamed history carries ids only. Either carry the "
+            f"engagement columns through predict._histories, or submit with a "
+            f"scheme that reads none of them."
+        )
+
+
 @dataclass(frozen=True)
 class Clicks:
     """Per impression, the embedding rows of its last K resolvable clicks.
@@ -501,8 +524,15 @@ class Ranker:
     index: Index
     embeddings: embed.Embeddings
     history_k: int
+    config: DatasetConfig
 
     def rank(self, history: pd.DataFrame, candidates: list[list[str]]) -> pd.DataFrame:
+        # The streamed submission history carries click ids and nothing beside
+        # them, so a scheme that reads an engagement column cannot be honoured
+        # here. Refused rather than quietly ranked uniform: submitting a
+        # different model from the one every reported number was measured on is
+        # the one failure a submission path must not have.
+        require_expressible(self.config)
         queries, _ = build_user_vectors(history, self.embeddings, self.history_k)
         return self.index.score_candidates(queries, candidates)
 
@@ -524,5 +554,8 @@ def ranker(
             f"{report['missing']:,} left at zero"
         )
     return Ranker(
-        index=build(embeddings), embeddings=embeddings, history_k=history_k
+        index=build(embeddings),
+        embeddings=embeddings,
+        history_k=history_k,
+        config=config,
     )

@@ -10,8 +10,11 @@ because they interact: repeating a title lengthens the document, and `b` is the
 weight on document length.
 
 The queries are built from clicked *titles* and so depend on none of the three
-axes. They are built once and reused across every cell, which is most of why
-this grid is minutes rather than hours.
+axes. They are built once and reused across every cell, which is part of why
+this grid is minutes rather than hours; the other part is `score_pairs`, which
+reads each candidate's own term weights out of the index rather than scoring
+the whole corpus once per impression. On EB-NeRD that is the difference between
+three minutes a cell and a few seconds.
 """
 
 from __future__ import annotations
@@ -38,17 +41,17 @@ DOCUMENT = "lexical-{split}.md"
 
 
 def per_impression_auc(
-    ranked: pd.DataFrame, label_of: list[dict[str, int]]
+    scores: np.ndarray, widths: np.ndarray, labels: list[list[int]]
 ) -> np.ndarray:
     """AUC per impression, on the ones where it is defined.
 
-    `score_candidates` returns its scores **sorted best-first, aligned to
-    `ranked_ids`**, not to the candidate order it was handed. So the labels
-    have to be read back through `ranked_ids` rather than zipped positionally
-    against the input list. Zipping them produced a grid of 0.4985 -- a
-    perfect coin flip, because a sorted score vector against an unsorted
-    label vector is exactly a random pairing, and it looked like a real
-    finding about BM25 rather than a bug.
+    `scores` is every (impression, candidate) pair concatenated in the order
+    the candidate lists were given — which is the order the labels are in too,
+    and the reason this is the path the sweep takes. The ranked path returns
+    its scores **sorted best-first and aligned to `ranked_ids`**, and zipping
+    those against input-order labels is exactly a random pairing: it produced a
+    grid of 0.4985, a perfect coin flip, that read as a real finding about BM25
+    on short news documents rather than as a bug.
 
     Undefined where every candidate is clicked or none is. An impression the
     retriever scored flat is kept and scores 0.5: a flat ranking is a real
@@ -56,11 +59,12 @@ def per_impression_auc(
     and dropping those would quietly measure a different population per cell.
     """
     values = []
-    for ids, row, labels in zip(ranked["ranked_ids"], ranked["scores"], label_of):
-        truth = np.array([labels[article] for article in ids])
+    starts = np.cumsum(widths) - widths
+    for start, width, marks in zip(starts, widths, labels):
+        truth = np.asarray(marks)
         if truth.sum() == 0 or truth.sum() == len(truth):
             continue
-        against = np.asarray(row, dtype="float64")
+        against = scores[start : start + width].astype("float64")
         values.append(0.5 if np.ptp(against) == 0 else roc_auc_score(truth, against))
     return np.asarray(values)
 
@@ -110,6 +114,13 @@ def document(rows: list[dict], name: str, split: str) -> str:
         if r is not best and r["hi"] >= best["lo"] and r["lo"] <= best["hi"]
     ]
     lines.append(
+        "- Those intervals are **unpaired**, and every cell scores the same "
+        "impressions: most of their width is the variance between impressions "
+        "rather than between settings, which cancels in a difference. So they "
+        "are a conservative bound and not the test — `pipeline.lexical_ablation` "
+        "runs the paired one on the setting this grid nominates."
+    )
+    lines.append(
         f"- {len(overlapping)} of {len(rows) - 1} other cells overlap the best one's "
         f"interval, so the surface is "
         f"{'flat and the argmax is largely noise' if len(overlapping) > len(rows) // 2 else 'peaked rather than flat'}."
@@ -132,12 +143,10 @@ def run(config: DatasetConfig, split: str, resamples: int) -> list[dict]:
     queries, _ = bm25_index.build_queries(
         clicks, articles, config, retrieval.HISTORY_K
     )
+    tokens = [query.split() for query in queries["query"]]
     candidates = list(scored["candidate_ids"])
-    # Label by article id, because the scores come back in ranked order.
-    label_of = [
-        dict(zip(ids, marks))
-        for ids, marks in zip(scored["candidate_ids"], scored["labels"])
-    ]
+    labels = list(scored["labels"])
+    widths = np.fromiter((len(c) for c in candidates), dtype="int64", count=len(candidates))
 
     rows: list[dict] = []
     for weight in TITLE_WEIGHT:
@@ -151,8 +160,9 @@ def run(config: DatasetConfig, split: str, resamples: int) -> list[dict]:
                 config, lexical=dataclasses.replace(config.lexical, k1=k1, b=b)
             )
             index = bm25_index.build(corpus, tuned)
-            ranked = index.score_candidates(queries, candidates)
-            values = per_impression_auc(ranked, label_of)
+            values = per_impression_auc(
+                index.score_pairs(tokens, candidates), widths, labels
+            )
             low, high = embed_compare.interval(values, resamples)
             rows.append(
                 {

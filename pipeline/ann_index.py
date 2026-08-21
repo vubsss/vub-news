@@ -21,7 +21,7 @@ import faiss
 import numpy as np
 import pandas as pd
 
-from pipeline import embed, retrieval
+from pipeline import embed, retrieval, weighting
 from pipeline.datasets import DatasetConfig
 
 
@@ -98,6 +98,12 @@ class Clicks:
 
     impression_ids: list[str]
     rows: list[np.ndarray]
+    # Which positions of the last-K window each row came from. Clicks the
+    # catalogue has no vector for are dropped, so a weight computed over the
+    # window has to be subset by this before it can pair with `rows` -- zipping
+    # the two directly would land every weight on the wrong click and look
+    # entirely well-formed.
+    kept: list[np.ndarray]
 
 
 def build_clicks(
@@ -112,15 +118,21 @@ def build_clicks(
     one we know less about, not one with different interests.
     """
     row_of = embeddings.index
-    rows = [
-        np.array(
-            [row_of[click] for click in clicks[-history_k:] if click in row_of],
-            dtype="int64",
-        )
-        for clicks in history["click_history"]
-    ]
+    rows: list[np.ndarray] = []
+    kept: list[np.ndarray] = []
+    for clicks in history["click_history"]:
+        window = clicks[-history_k:]
+        found = [
+            (position, row_of[click])
+            for position, click in enumerate(window)
+            if click in row_of
+        ]
+        kept.append(np.array([p for p, _ in found], dtype="int64"))
+        rows.append(np.array([r for _, r in found], dtype="int64"))
     return Clicks(
-        impression_ids=list(history["impression_id"].astype("string")), rows=rows
+        impression_ids=list(history["impression_id"].astype("string")),
+        rows=rows,
+        kept=kept,
     )
 
 
@@ -209,7 +221,11 @@ class Index:
 
 
     def score_candidates_pooled(
-        self, clicks: Clicks, candidates: list[list[str]], pooling: str
+        self,
+        clicks: Clicks,
+        candidates: list[list[str]],
+        pooling: str,
+        weights: list[np.ndarray] | None = None,
     ) -> pd.DataFrame:
         """Rank an impression's candidates by an aggregator over its clicks.
 
@@ -223,6 +239,13 @@ class Index:
         pooled vector, because a max over K clicks against the whole catalogue
         is K searches rather than one, and recall@K must stay a measurement of
         the same thing across every cell of a sweep.
+
+        `weights` says how much each click counts, one array per impression
+        over the window, already subset to the clicks that survived. They scale
+        the similarities before the aggregator sees them, so `mean` becomes a
+        weighted mean and `max` asks which click matches best *after* recency
+        is applied. `last` is unaffected by construction: scaling one click's
+        similarity by a positive number cannot reorder the candidates.
         """
         if pooling not in retrieval.POOLINGS:
             raise ValueError(
@@ -233,7 +256,10 @@ class Index:
         ranked_ids: list[list[str]] = []
         scores: list[list[float]] = []
 
-        for rows, impression in zip(clicks.rows, candidates, strict=True):
+        per_click = weights if weights is not None else [None] * len(clicks.rows)
+        for rows, impression, weight in zip(
+            clicks.rows, candidates, per_click, strict=True
+        ):
             found = np.zeros(len(impression), dtype="float32")
             candidate_rows = np.array(
                 [row_of.get(candidate, -1) for candidate in impression]
@@ -245,8 +271,21 @@ class Index:
                     self.embeddings.vectors[candidate_rows[known]]
                     @ self.embeddings.vectors[rows].T
                 )
+                if weight is not None and len(weight):
+                    if len(weight) != similarity.shape[1]:
+                        raise ValueError(
+                            f"{len(weight)} weights for "
+                            f"{similarity.shape[1]} clicks"
+                        )
+                    similarity = similarity * weight.astype("float32")
                 if pooling == "mean":
-                    found[known] = similarity.mean(axis=1)
+                    # A weighted mean: the weights are normalised, so this is
+                    # the sum. Unweighted they are all 1/K and it is the mean.
+                    found[known] = (
+                        similarity.sum(axis=1)
+                        if weight is not None and len(weight)
+                        else similarity.mean(axis=1)
+                    )
                 elif pooling == "max":
                     found[known] = similarity.max(axis=1)
                 else:
@@ -361,6 +400,57 @@ def retrieve_corpus(
     return ranked, asked
 
 
+def click_weights(
+    config: DatasetConfig,
+    history: pd.DataFrame,
+    clicks: Clicks,
+    history_k: int,
+    at: pd.Series | None = None,
+) -> list[np.ndarray] | None:
+    """One weight per surviving click, per impression, normalised to sum to 1.
+
+    None when the scheme is uniform, so the unweighted path stays exactly the
+    path every recorded number came from rather than a weighted one that
+    happens to use equal weights.
+
+    The window is sliced the same way everywhere — `[-history_k:]`, a suffix —
+    and then subset by `clicks.kept`, which is what makes a weight land on the
+    click it was computed for even though the catalogue dropped some.
+    """
+    spec = config.weighting
+    if spec.scheme == "uniform":
+        return None
+    weighting.check(config, spec.scheme)
+
+    columns = {
+        name: (history[name] if name in history else None)
+        for name in ("click_times", "click_read_times", "click_scroll")
+    }
+    stamps = list(at) if at is not None else [None] * len(history)
+
+    built: list[np.ndarray] = []
+    for position, kept in enumerate(clicks.kept):
+        window = {}
+        for name, column in columns.items():
+            values = None if column is None else column.iloc[position]
+            window[name] = (
+                None if values is None else np.asarray(values)[-history_k:]
+            )
+        found = weighting.weights(
+            spec.scheme,
+            spec.decay,
+            len(window["click_times"])
+            if window["click_times"] is not None
+            else len(kept),
+            times=window["click_times"],
+            read_times=window["click_read_times"],
+            scroll=window["click_scroll"],
+            at=stamps[position],
+        )
+        built.append(weighting.normalise(found[kept] if len(found) else found))
+    return built
+
+
 def rank_candidates(
     config: DatasetConfig,
     behaviors: pd.DataFrame,
@@ -388,7 +478,12 @@ def rank_candidates(
     # candidates while looking entirely well-formed.
     candidates_of = dict(zip(behaviors["impression_id"], behaviors["candidate_ids"]))
     candidates = [candidates_of[i] for i in clicks.impression_ids]
-    return index.score_candidates_pooled(clicks, candidates, pooling)
+    # The impression's own timestamp, which time decay measures back from. It
+    # is the moment the ranking is served, so reading it is not the future.
+    served = dict(zip(behaviors["impression_id"], behaviors["impression_time"]))
+    at = pd.Series([served.get(i) for i in clicks.impression_ids])
+    weights = click_weights(config, history, clicks, history_k, at)
+    return index.score_candidates_pooled(clicks, candidates, pooling, weights)
 
 
 @dataclass(frozen=True)

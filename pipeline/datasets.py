@@ -202,6 +202,27 @@ class LexicalSpec:
 
 
 @dataclass(frozen=True)
+class WeightingSpec:
+    """How much each past click counts toward the profile, per dataset.
+
+    `scheme` is one of `weighting.SCHEMES`; which of them a dataset can express
+    is derived from the ColumnMap above rather than repeated here, because a
+    second list is a second thing to keep true.
+
+    `decay` is the constant the active scheme reads, and means something
+    different in each: for `position` it is the per-click multiplier, so 0.9
+    means a click counts 10% less than the one after it; for `time` it is the
+    half-life in *hours*. `uniform` and `engagement` read neither and leave it
+    at its default. One field rather than one per scheme because exactly one
+    scheme is active at a time, and a sweep that varied a constant belonging to
+    a scheme it was not running would report cells that differ in nothing.
+    """
+
+    scheme: str = "uniform"
+    decay: float = 1.0
+
+
+@dataclass(frozen=True)
 class EmbeddingSpec:
     # "generate": produced by a notebook on a hosted GPU, fetched as an
     # artifact. "provided": ships with the dataset.
@@ -293,6 +314,7 @@ class DatasetConfig:
     raw: RawSpec
     split: SplitSpec
     lexical: LexicalSpec
+    weighting: WeightingSpec
     sources: SourceSpec
     columns: ColumnMap
     embeddings: EmbeddingSpec
@@ -347,6 +369,7 @@ MIND = DatasetConfig(
     split=SplitSpec(tune_days=1, val_days=1, test_days=1),
     # SPEC.md's values, and never measured -- phase 3 sweeps them on tune.
     lexical=LexicalSpec(k1=2.0, b=0.9, title_weight=3, query_abstract=True),
+    weighting=WeightingSpec(),
     sources=SourceSpec(
         articles=TableSource(
             files=("train/news.tsv", "dev/news.tsv"),
@@ -541,6 +564,7 @@ EBNERD = DatasetConfig(
     split=SplitSpec(tune_days=2, val_days=3, test_days=3),
     # SPEC.md's values, and never measured -- phase 3 sweeps them on tune.
     lexical=LexicalSpec(k1=2.0, b=0.9, title_weight=2, query_abstract=True),
+    weighting=WeightingSpec(),
     sources=SourceSpec(
         articles=TableSource(
             files=("articles.parquet",),

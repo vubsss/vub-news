@@ -16,7 +16,7 @@ import bm25s
 import numpy as np
 import pandas as pd
 
-from pipeline import preprocess, retrieval
+from pipeline import preprocess, retrieval, weighting
 from pipeline.datasets import DatasetConfig
 
 # The article ids, saved next to the bm25s index, which does not store them.
@@ -29,6 +29,7 @@ def build_queries(
     config: DatasetConfig,
     history_k: int = retrieval.HISTORY_K,
     with_abstract: bool | None = None,
+    weights: list[np.ndarray] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     """One query per impression: the last history_k clicked articles, cleaned.
 
@@ -49,10 +50,33 @@ def build_queries(
         text = (text + " " + articles["abstract"].fillna("")).str.strip()
     source = dict(zip(articles["article_id"], text))
 
-    query = [
-        clean(" ".join(source.get(article_id, "") for article_id in clicks[-history_k:]))
-        for clicks in history["click_history"]
-    ]
+    if weights is None:
+        query = [
+            clean(
+                " ".join(
+                    source.get(article_id, "") for article_id in clicks[-history_k:]
+                )
+            )
+            for clicks in history["click_history"]
+        ]
+    else:
+        # Recency as term frequency: a click worth more contributes its title
+        # more times, which raises those terms before BM25 saturates them --
+        # the same mechanism `title_weight` uses on the document side, and the
+        # only one a bag of terms has. The tuned k1, b and title weight are
+        # untouched; this changes what the query says, not how it is scored.
+        query = [
+            clean(
+                " ".join(
+                    " ".join([source.get(article_id, "")] * int(count))
+                    for article_id, count in zip(
+                        clicks[-history_k:], repeats_for(found), strict=True
+                    )
+                    if count > 0
+                )
+            )
+            for clicks, found in zip(history["click_history"], weights, strict=True)
+        ]
     # Indexed positionally, not by whatever the caller sliced: run passes the
     # validation slice of the history, and carrying its gappy index onward
     # would misalign the queries against anything built alongside them.
@@ -410,6 +434,31 @@ def retrieve_corpus(
     return ranked, asked
 
 
+# The most times any one clicked title is repeated in a query. Recency
+# weighting on the lexical side has to become an integer count of tokens, so
+# the continuous weights are quantised onto 0..MAX_REPEAT: the most-weighted
+# click is repeated MAX_REPEAT times and one weighted below half a step drops
+# out of the query entirely, which is what a decay is for. Small because a
+# query is already the concatenation of K titles and this multiplies its
+# length -- at K=80 and MAX_REPEAT=3 the worst case is 240 titles.
+MAX_REPEAT = 3
+
+
+def repeats_for(found: np.ndarray) -> np.ndarray:
+    """Per-click token repetitions, from the weights the profile would use.
+
+    Scaled by the largest weight rather than by their sum, so the newest click
+    lands on MAX_REPEAT whatever the decay constant is and the shape of the
+    query depends on the decay's *ratios*. A weight of zero repeats zero times.
+    """
+    if not len(found):
+        return np.empty(0, dtype="int64")
+    peak = found.max()
+    if peak <= 0:
+        return np.ones(len(found), dtype="int64")
+    return np.rint(MAX_REPEAT * found / peak).astype("int64")
+
+
 def window_for(history_k: int, pooling: str) -> int:
     """The history window this pooling leaves BM25 with.
 
@@ -436,6 +485,51 @@ def window_for(history_k: int, pooling: str) -> int:
     return 1 if pooling == "last" else history_k
 
 
+def query_weights(
+    config: DatasetConfig,
+    history: pd.DataFrame,
+    history_k: int,
+    served: dict,
+) -> list[np.ndarray] | None:
+    """One weight per click in the window, or None when the scheme is uniform.
+
+    Unlike the semantic side nothing is dropped here — a click the catalogue
+    does not hold contributes an empty string rather than disappearing — so the
+    weights pair with the window directly and need no `kept` subsetting.
+    """
+    spec = config.weighting
+    if spec.scheme == "uniform":
+        return None
+    weighting.check(config, spec.scheme)
+
+    columns = {
+        name: (history[name] if name in history else None)
+        for name in ("click_times", "click_read_times", "click_scroll")
+    }
+    built: list[np.ndarray] = []
+    for position, (impression_id, clicks) in enumerate(
+        zip(history["impression_id"], history["click_history"])
+    ):
+        window = {
+            name: None
+            if column is None
+            else np.asarray(column.iloc[position])[-history_k:]
+            for name, column in columns.items()
+        }
+        built.append(
+            weighting.weights(
+                spec.scheme,
+                spec.decay,
+                len(clicks[-history_k:]),
+                times=window["click_times"],
+                read_times=window["click_read_times"],
+                scroll=window["click_scroll"],
+                at=served.get(impression_id),
+            )
+        )
+    return built
+
+
 def rank_candidates(
     config: DatasetConfig,
     behaviors: pd.DataFrame,
@@ -455,8 +549,14 @@ def rank_candidates(
 
     wanted = set(behaviors["impression_id"])
     clicks = history[history["impression_id"].isin(wanted)]
+    window = window_for(history_k, pooling)
+    served = dict(zip(behaviors["impression_id"], behaviors["impression_time"]))
     queries, _ = build_queries(
-        clicks, articles, config, window_for(history_k, pooling)
+        clicks,
+        articles,
+        config,
+        window,
+        weights=query_weights(config, clicks, window, served),
     )
 
     # Looked up by id rather than zipped: the history frame is filtered from a

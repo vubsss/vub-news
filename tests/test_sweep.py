@@ -212,6 +212,7 @@ def _store_of(store):
             "title": pd.Series(
                 ["sharks win", "markets fall", "election result"], dtype="string"
             ),
+            "abstract": pd.Series(["", "", ""], dtype="string"),
             "category": pd.Series(["sports", "finance", "politics"], dtype="string"),
             "subcategory": pd.Series(["nfl", "markets", "vote"], dtype="string"),
             "published_time": pd.to_datetime(

@@ -89,6 +89,25 @@ def test_changing_b_changes_the_ranking_of_documents_of_different_length():
     )
 
 
+def test_the_query_is_built_from_the_field_the_registry_names():
+    """`query_abstract` is a choice made on tune, so it has to reach the query.
+    A registry field the query builder ignored would report a flat ablation and
+    look like a measurement that found nothing."""
+    corpus = articles([("a1", "sharks win", "a hockey report")])
+    history = pd.DataFrame(
+        {
+            "impression_id": pd.Series(["i1"], dtype="string"),
+            "click_history": [["a1"]],
+        }
+    )
+
+    titles, _ = bm25_index.build_queries(history, corpus, tuned(query_abstract=False))
+    both, _ = bm25_index.build_queries(history, corpus, tuned(query_abstract=True))
+
+    assert "hockey" not in titles["query"][0]
+    assert "hockey" in both["query"][0]
+
+
 # --- field weighting --------------------------------------------------------
 
 

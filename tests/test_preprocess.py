@@ -90,7 +90,7 @@ def test_an_article_with_no_abstract_falls_back_to_its_title():
         ]
     )
 
-    text, report = preprocess.build_lexical_text(frame, MIND)
+    text, report = preprocess.build_lexical_text(frame, MIND, title_weight=1)
 
     assert list(text) == [
         "sharks beat bears late goal decided game",
@@ -113,7 +113,7 @@ def test_a_blank_abstract_counts_as_a_missing_one():
         ]
     )
 
-    text, report = preprocess.build_lexical_text(frame, MIND)
+    text, report = preprocess.build_lexical_text(frame, MIND, title_weight=1)
 
     assert list(text)[1:] == ["sharks beat bears"] * 3
     assert report["missing_abstract"] == 3
@@ -132,7 +132,7 @@ def test_articles_left_with_nothing_after_cleaning_are_counted_not_dropped():
         ]
     )
 
-    text, report = preprocess.build_lexical_text(frame, MIND)
+    text, report = preprocess.build_lexical_text(frame, MIND, title_weight=1)
 
     assert list(text) == ["sharks beat bears", "", ""]
     assert report["articles"] == 3
@@ -145,11 +145,15 @@ def test_a_document_and_a_query_go_through_the_one_callable(config):
     exactly what it returns for the article's own text. Ticket 6 builds its
     queries by calling the same function, so the two sides cannot drift — a
     build_lexical_text that cleaned documents its own way would fail here
-    however reasonable its output looked."""
+    however reasonable its output looked.
+
+    At title weight 1, because that is the composition this equality is about.
+    The registry's weight is a tuned value and repeating the title is exactly
+    what it does; what must not drift is the cleaning, which is shared."""
     title, abstract = "Æblerne på øen er gode", "Fløde året rundt!"
     frame = articles([("a1", title, abstract)])
 
-    text, _ = preprocess.build_lexical_text(frame, config)
+    text, _ = preprocess.build_lexical_text(frame, config, title_weight=1)
     query = preprocess.cleaner(config)(f"{title} {abstract}")
 
     assert text[0] == query
@@ -182,9 +186,13 @@ def test_run_fills_lexical_text_for_every_article_and_reports_the_gaps(store, ca
 
     written = pd.read_parquet(store / "articles.parquet")
     assert not written["lexical_text"].isna().any()
+    # Composed at the registry's title weight rather than at a literal, because
+    # what the stage owes is the catalogue the registry describes -- a run that
+    # ignored a tuned weight would write a corpus no measured number came from.
+    headline = " ".join(["sharks beat bears"] * MIND.lexical.title_weight)
     assert list(written["lexical_text"]) == [
-        "sharks beat bears late goal decided game",
-        "sharks beat bears",
+        f"{headline} late goal decided game",
+        headline,
         "",
     ]
 

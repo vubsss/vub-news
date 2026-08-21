@@ -601,6 +601,7 @@ def _store_of(store):
         {
             "article_id": pd.Series(["a1", "a2"], dtype="string"),
             "title": pd.Series(["sharks win", "markets fall"], dtype="string"),
+            "abstract": pd.Series(["", ""], dtype="string"),
             "category": pd.Series(["sports", "finance"], dtype="string"),
             "subcategory": pd.Series(["hockey", "markets"], dtype="string"),
             "lexical_text": pd.Series(["sharks win", "markets fall"], dtype="string"),

@@ -28,19 +28,29 @@ def build_queries(
     articles: pd.DataFrame,
     config: DatasetConfig,
     history_k: int = retrieval.HISTORY_K,
+    with_abstract: bool | None = None,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
-    """One query per impression: the last history_k clicked titles, cleaned.
+    """One query per impression: the last history_k clicked articles, cleaned.
 
-    Titles rather than the full lexical_text, because a query built from
-    abstracts too drowns the terms that identify what the user actually reads.
+    Titles or titles and abstracts, per the registry's `query_abstract` — the
+    module used to assert titles, on the argument that abstracts would drown
+    the terms identifying what a user actually reads. `with_abstract`
+    overrides the registry, which is how `pipeline.lexical_ablation` measures
+    the two against each other rather than restating the argument.
+
     A user with no history has no query, which is reported rather than filled
     in — see `retrieve`.
     """
+    if with_abstract is None:
+        with_abstract = config.lexical.query_abstract
     clean = preprocess.cleaner(config)
-    titles = dict(zip(articles["article_id"], articles["title"].fillna("")))
+    text = articles["title"].fillna("")
+    if with_abstract:
+        text = (text + " " + articles["abstract"].fillna("")).str.strip()
+    source = dict(zip(articles["article_id"], text))
 
     query = [
-        clean(" ".join(titles.get(article_id, "") for article_id in clicks[-history_k:]))
+        clean(" ".join(source.get(article_id, "") for article_id in clicks[-history_k:]))
         for clicks in history["click_history"]
     ]
     # Indexed positionally, not by whatever the caller sliced: run passes the

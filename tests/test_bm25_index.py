@@ -13,11 +13,18 @@ MIND = DATASETS["mind"]
 
 
 def articles(rows):
-    """rows: (article_id, title)"""
+    """rows: (article_id, title[, abstract])
+
+    `abstract` carries the unified schema's column even where a test does not
+    care about it: a query built at `query_abstract=True` reads it, and the
+    feature store always has it."""
     return pd.DataFrame(
         {
             "article_id": pd.Series([row[0] for row in rows], dtype="string"),
             "title": pd.Series([row[1] for row in rows], dtype="string"),
+            "abstract": pd.Series(
+                [row[2] if len(row) > 2 else "" for row in rows], dtype="string"
+            ),
         }
     )
 
@@ -258,6 +265,7 @@ def write_store(store):
                 ],
                 dtype="string",
             ),
+            "abstract": pd.Series([""] * 4, dtype="string"),
             "lexical_text": pd.Series(
                 [
                     "sharks beat bears",

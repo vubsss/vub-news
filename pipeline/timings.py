@@ -12,6 +12,16 @@ process's current `VmRSS`; a thread reads it every 100 ms and keeps the
 largest value seen between entering the stage and leaving it. That is Linux
 only, which both machines this runs on are.
 
+What the peak is *not* is the stage's own allocation. CPython does not
+return freed arenas to the OS promptly, so a stage entered right after a
+heavy one starts from that one's resident set and looks expensive without
+having allocated anything -- measured on the first Ada run, where `preprocess`
+read 9.9 GB three seconds after `split` peaked at 11.0 GB. The entry reading
+is therefore recorded alongside the peak, and the document reports the rise.
+The peak still answers the question the SLURM job asks -- how much memory the
+process needs while this stage runs -- and the rise answers the one the scale
+analysis asks.
+
 Two things the sampler cannot see, and neither matters here: memory held by a
 child process (every stage runs in-process), and a spike shorter than the
 sampling interval (a stage's peak is held by an array that lives for the whole
@@ -77,6 +87,7 @@ def measure(stage: str, dataset: str, run: str):
     either, and a cost for work that did not complete is worse than no number.
     """
     sampler = _Sampler()
+    entry = sampler.peak
     sampler.start()
     started = time.perf_counter()
     try:
@@ -93,6 +104,7 @@ def measure(stage: str, dataset: str, run: str):
             "dataset": dataset,
             "stage": stage,
             "seconds": round(elapsed, 2),
+            "entry_rss_mb": round(entry, 1),
             "peak_rss_mb": round(peak, 1),
         }
     )
@@ -153,22 +165,30 @@ def document(rows: list[dict]) -> str:
         "build.py` as each stage finishes and reported here newest-first-wins. "
         "Regenerate with `python -m pipeline.timings`.",
         "",
-        "- **peak RSS** is `VmRSS` sampled every 100 ms *while that stage "
-        "runs*, so it is the stage's own high-water mark. `/usr/bin/time -v` "
-        "around the whole job reports one number for all nine and cannot "
-        "separate them.",
+        "- **peak RSS** is `VmRSS` sampled every 100 ms while that stage "
+        "runs. `/usr/bin/time -v` around the whole job reports one number for "
+        "all nine and cannot separate them.",
+        "- **rise** is peak minus the reading on entry, and is the closer "
+        "thing to what the stage itself allocated. CPython does not hand "
+        "freed arenas back promptly, so a stage that follows a heavy one "
+        "starts from its resident set: the peak is what the job must be sized "
+        "for, the rise is what the stage is responsible for.",
         "- A stage is measured on whichever machine last ran it, which is why "
         "the host and CPU count are columns rather than a heading. Wall times "
         "from different hosts are not comparable; the memory is.",
         "",
-        "| dataset | stage | wall | peak RSS | host | cpus | measured |",
-        "| --- | --- | ---: | ---: | --- | ---: | --- |",
+        "| dataset | stage | wall | peak RSS | rise | host | cpus | measured |",
+        "| --- | --- | ---: | ---: | ---: | --- | ---: | --- |",
     ]
     for row in rows:
+        # Rows written before the entry reading existed report no rise rather
+        # than a wrong one.
+        entry = row.get("entry_rss_mb")
+        rise = "—" if entry is None else memory(row["peak_rss_mb"] - entry)
         lines.append(
             f"| {row['dataset']} | {row['stage']} | "
             f"{duration(row['seconds'])} | {memory(row['peak_rss_mb'])} | "
-            f"{row['host']} | {row['cpus']} | {row['run'][:10]} |"
+            f"{rise} | {row['host']} | {row['cpus']} | {row['run'][:10]} |"
         )
 
     lines += ["", "## Reading", ""]

@@ -33,7 +33,7 @@ def test_a_stage_records_its_wall_time_and_peak(artifacts):
     assert row["dataset"] == "mind"
     assert row["run"] == "run-1"
     assert row["seconds"] >= 0
-    assert row["peak_rss_mb"] > 0
+    assert row["peak_rss_mb"] >= row["entry_rss_mb"] > 0
 
 
 def test_the_peak_is_what_was_resident_during_the_stage(artifacts, monkeypatch):
@@ -57,6 +57,7 @@ def test_the_peak_is_what_was_resident_during_the_stage(artifacts, monkeypatch):
 
     (row,) = rows(artifacts)
     assert row["peak_rss_mb"] == 9000.0
+    assert row["entry_rss_mb"] == 100.0
 
 
 def test_resident_mb_reads_this_process(artifacts):
@@ -129,6 +130,50 @@ def test_the_document_names_the_stage_that_sets_the_ceiling(artifacts):
     # 9000 MB at Ada's 3000 MB per CPU.
     assert "-c 3" in text
     assert "`ingest`" in text
+
+
+def test_the_rise_separates_a_stage_from_what_it_inherited(artifacts):
+    """Measured on the first Ada run: `preprocess` read 9.9 GB three seconds
+    after `split` peaked at 11.0 GB, having allocated almost nothing. CPython
+    does not hand freed arenas back to the OS promptly, so the peak alone
+    reads as though every stage after a heavy one is heavy too."""
+    timings.record(
+        {
+            "run": "2026-08-21T00:00:00+00:00",
+            "host": "gnode050",
+            "cpus": 20,
+            "dataset": "ebnerd",
+            "stage": "preprocess",
+            "seconds": 3.7,
+            "entry_rss_mb": 9800.0,
+            "peak_rss_mb": 9857.0,
+        }
+    )
+
+    (row,) = [
+        line
+        for line in timings.write_document().read_text().splitlines()
+        if line.startswith("| ebnerd |")
+    ]
+
+    assert "9.6 GB" in row  # what the job must be sized for
+    assert "57 MB" in row  # what the stage is responsible for
+
+
+def test_a_row_written_before_the_entry_reading_reports_no_rise(artifacts):
+    timings.record(
+        {
+            "run": "2026-08-21T00:00:00+00:00",
+            "host": "gnode050",
+            "cpus": 20,
+            "dataset": "ebnerd",
+            "stage": "split",
+            "seconds": 94.5,
+            "peak_rss_mb": 11041.9,
+        }
+    )
+
+    assert "| — |" in timings.write_document().read_text()
 
 
 def test_no_measurements_is_not_an_error(artifacts):

@@ -173,11 +173,19 @@ class LexicalSpec:
     it also lengthens the document, which real per-field normalisation would
     not. Said plainly here because `bm25s` indexes one field and cannot express
     the exact form.
+
+    `query_abstract` is the other side of the same question, on the query
+    rather than the document: whether the click history a query is built from
+    contributes each article's title only, or its title and abstract. The
+    module that built the query asserted titles were better because abstracts
+    would drown the identifying terms. That was an argument until phase 3
+    measured it, and it is a field here because the answer is per dataset.
     """
 
     k1: float
     b: float
     title_weight: int = 1
+    query_abstract: bool = False
 
 
 @dataclass(frozen=True)
@@ -325,7 +333,7 @@ MIND = DatasetConfig(
     # partition.
     split=SplitSpec(tune_days=1, val_days=1, test_days=1),
     # SPEC.md's values, and never measured -- phase 3 sweeps them on tune.
-    lexical=LexicalSpec(k1=1.5, b=0.75),
+    lexical=LexicalSpec(k1=2.0, b=0.9, title_weight=3, query_abstract=True),
     sources=SourceSpec(
         articles=TableSource(
             files=("train/news.tsv", "dev/news.tsv"),
@@ -512,7 +520,7 @@ EBNERD = DatasetConfig(
     # impressions to separate two configurations.
     split=SplitSpec(tune_days=2, val_days=3, test_days=3),
     # SPEC.md's values, and never measured -- phase 3 sweeps them on tune.
-    lexical=LexicalSpec(k1=1.5, b=0.75),
+    lexical=LexicalSpec(k1=2.0, b=0.9, title_weight=2, query_abstract=True),
     sources=SourceSpec(
         articles=TableSource(
             files=("articles.parquet",),

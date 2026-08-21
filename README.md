@@ -289,6 +289,44 @@ Writes `artifacts/embeddings-tune.jsonl` and a markdown table beside it. It choo
 a winner into the registry stays a hand edit with a commit message, because it is a decision rather
 than a computation.
 
+## Lexical tuning
+
+Two things on the lexical side had never been measured: `k1` and `b` were module constants copied
+from `SPEC.md`, and the query was built from clicked **titles** on the strength of a comment
+reasoning that abstracts would drown the identifying terms. Both are registry fields now, and both
+were chosen on **tune**.
+
+```bash
+python -m pipeline.lexical_sweep --dataset mind        # 75 cells: k1 x b x title weight
+python -m pipeline.lexical_ablation --dataset mind     # the named settings, on both paths
+```
+
+The sweep ranks; it does not establish. **Every cell scores the same impressions**, and a per-cell
+bootstrap interval is about ±0.003 wide because impressions differ from each other far more than
+settings do — while the whole surface spans 0.0034. No two cells could ever be disjoint, so asking
+whether their intervals overlap answers the question before it is run. `lexical_ablation` bootstraps
+the **paired** per-impression difference instead, which cancels exactly that shared variance, and it
+reports both the corpus-retrieval path (recall@K) and the re-ranking path (AUC, MRR, nDCG) because
+field weighting can move them in different directions.
+
+What that found, on tune, paired, both datasets independently:
+
+| | tuned `k1`, `b`, title weight | query built from titles **and abstracts** |
+|---|---|---|
+| MIND | +0.0010 auc [+0.0003, +0.0016] | **+0.0072** auc [+0.0049, +0.0093] |
+| EB-NeRD | +0.0009 auc [+0.0005, +0.0013] | **+0.0073** auc [+0.0054, +0.0091] |
+
+The 75-cell grid over the parameters IR practice says to tune is worth about +0.001. The one-line
+assumption nobody had tested is worth seven times that, on both languages, replicating to the fourth
+decimal. Both grids are flat and rise monotonically to their own boundary on every axis; they were
+not extended, because a surface whose entire span is 0.0034 with all 74 other cells overlapping the
+best is flat by the ticket's own rule.
+
+Title weighting is an **approximation** of BM25F rather than BM25F: repeating the title raises its
+terms' frequency before saturation, which is the mechanism, but it also lengthens the document, which
+real per-field length normalisation would not. `bm25s` indexes one field and cannot express the exact
+form, and `LexicalSpec` says so rather than glossing it.
+
 ## Lexical against semantic
 
 The comparison the assignment asks for — which retriever wins, on which dataset, on which slice — is
@@ -317,7 +355,9 @@ says `not established` and the reading says so in words, which is not the same a
 equal: the test is conservative, and deliberately so. It is conservative in one further way worth
 knowing — both retrievers rank the same impressions, so a paired test on the per-impression
 differences would separate more than this does. The stored reports carry slice means rather than
-per-impression values, so that test is not available without re-scoring.
+per-impression values, so that test is not available without re-scoring. `lexical_ablation` does run
+that paired test, on the settings it compares — see *Lexical tuning* above for what it separates that
+overlapping intervals do not.
 
 Coverage is the one metric compared by value rather than by interval, because its interval is a width
 and not a bracket around its own value (see above). And only the ranking metrics have a better
@@ -542,6 +582,8 @@ pipeline/
   evaluate.py         ranking and beyond-accuracy metrics, sliced, with bootstrap intervals
   compare.py          lexical against semantic, both datasets, from the stored results
   sweep.py            the ablation grid over history windows, resumable, one file out
+  lexical_sweep.py    BM25's k1, b and title weight, swept jointly on tune
+  lexical_ablation.py the same retriever on both paths, and the query-side ablation
   predict.py          the competition's own impressions, ranked and packaged
   submissions.py      per-competition line formats for the prediction file
   paths.py            filesystem layout

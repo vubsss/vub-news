@@ -202,6 +202,25 @@ class LexicalSpec:
 
 
 @dataclass(frozen=True)
+class HybridSpec:
+    """How the lexical and semantic rankings are combined, per dataset.
+
+    `rule` is `rrf` or `linear`. RRF keeps only the order, which is what makes
+    it the safer default: BM25 scores are unbounded sums of term weights and
+    cosines live in [-1, 1], and nothing in either makes them comparable.
+
+    `k` is RRF's rank constant — 60 by convention, so a sweep centres there
+    rather than searching blind. `alpha` weights the *lexical* side of the
+    linear rule, so alpha=1 is BM25 alone and alpha=0 is the semantic index
+    alone. Only one of the two is read at a time, and the sweep says which.
+    """
+
+    rule: str = "rrf"
+    k: float = 60.0
+    alpha: float = 0.5
+
+
+@dataclass(frozen=True)
 class WeightingSpec:
     """How much each past click counts toward the profile, per dataset.
 
@@ -315,6 +334,7 @@ class DatasetConfig:
     split: SplitSpec
     lexical: LexicalSpec
     weighting: WeightingSpec
+    hybrid: HybridSpec
     sources: SourceSpec
     columns: ColumnMap
     embeddings: EmbeddingSpec
@@ -370,6 +390,7 @@ MIND = DatasetConfig(
     # SPEC.md's values, and never measured -- phase 3 sweeps them on tune.
     lexical=LexicalSpec(k1=2.0, b=0.9, title_weight=3, query_abstract=True),
     weighting=WeightingSpec(),
+    hybrid=HybridSpec(),
     sources=SourceSpec(
         articles=TableSource(
             files=("train/news.tsv", "dev/news.tsv"),
@@ -569,6 +590,7 @@ EBNERD = DatasetConfig(
     # alike, at every constant swept -- so what carries signal here is not when
     # a click happened but how hard it was read. MIND has no counterpart.
     weighting=WeightingSpec(scheme="engagement"),
+    hybrid=HybridSpec(),
     sources=SourceSpec(
         articles=TableSource(
             files=("articles.parquet",),

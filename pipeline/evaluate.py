@@ -39,7 +39,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-from pipeline import ann_index, bm25_index, paths, retrieval
+from pipeline import ann_index, bm25_index, hybrid, paths, retrieval
 from pipeline.datasets import DATASETS, DatasetConfig
 
 # The retrievers the harness can score. The values are modules, each exposing
@@ -49,6 +49,7 @@ from pipeline.datasets import DATASETS, DatasetConfig
 RETRIEVERS = {
     "bm25": bm25_index,
     "ann": ann_index,
+    "hybrid": hybrid,
 }
 
 # nDCG cut-offs, per SPEC.

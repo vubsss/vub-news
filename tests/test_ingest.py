@@ -278,11 +278,27 @@ def test_mind_history_splits_the_click_string(raw):
 
 
 def write_ebnerd_history(split, rows):
-    """rows: (user_id, article_id_fixed)"""
+    """rows: (user_id, article_id_fixed)
+
+    The three engagement columns are written alongside, one entry per click,
+    because the real file carries them and a fixture that did not would let a
+    reader of them pass here and fail on the dataset."""
     path = EBNERD.raw_dir / split / "history.parquet"
     path.parent.mkdir(parents=True, exist_ok=True)
     frame = pd.DataFrame(rows, columns=["user_id", "article_id_fixed"])
     frame["user_id"] = frame["user_id"].astype("uint32")
+    stamp = pd.Timestamp("2023-05-20 09:00:00")
+    frame["impression_time_fixed"] = [
+        [stamp + pd.Timedelta(hours=i) for i in range(len(clicks))]
+        for clicks in frame["article_id_fixed"]
+    ]
+    frame["read_time_fixed"] = [
+        [10.0 * (i + 1) for i in range(len(clicks))]
+        for clicks in frame["article_id_fixed"]
+    ]
+    frame["scroll_percentage_fixed"] = [
+        [50.0] * len(clicks) for clicks in frame["article_id_fixed"]
+    ]
     frame.to_parquet(path)
 
 
@@ -459,3 +475,87 @@ def test_both_datasets_produce_the_same_history_schema(raw):
 
     assert list(mind.columns) == list(ebnerd.columns)
     assert mind.dtypes.to_dict() == ebnerd.dtypes.to_dict()
+
+    # The asymmetry the registry describes: EB-NeRD has the engagement
+    # columns, MIND has them as null. Null and not missing, so a stage reading
+    # them needs no branch on the dataset's name -- it asks whether the column
+    # holds anything, which is a question about data rather than provenance.
+    for column in ("click_times", "click_read_times", "click_scroll"):
+        assert mind[column].isna().all(), f"MIND cannot have {column}"
+        assert ebnerd[column].map(len).sum() > 0, f"EB-NeRD should have {column}"
+
+
+def test_ebnerds_engagement_columns_line_up_with_the_clicks_they_describe(raw):
+    """A weighting scheme takes the last K clicks and the last K of a parallel
+    array and pairs them by position. If the arrays came back a different
+    length, or in a different order, every weight would land on the wrong
+    click and the profile would look plausible while being wrong."""
+    stamp = pd.Timestamp("2023-05-23 07:31:00")
+    write_ebnerd_behaviors("train", [(7, 55, stamp, [11], [11])])
+    write_ebnerd_behaviors("validation", [(8, 56, stamp, [21], [])])
+    write_ebnerd_history("train", [(55, [1, 2, 3])])
+    write_ebnerd_history("validation", [(56, [3])])
+
+    history = ingest.build_history(EBNERD, ingest.build_behaviors(EBNERD))
+
+    row = history[history["user_id"] == "55"].iloc[0]
+    assert len(row["click_history"]) == 3
+    for column in ("click_times", "click_read_times", "click_scroll"):
+        assert len(row[column]) == len(row["click_history"])
+    # The fixture writes one hour later and ten seconds longer per click, in
+    # click order, so the arrays are ordered rather than merely the right size.
+    assert list(row["click_read_times"]) == [10.0, 20.0, 30.0]
+    assert row["click_times"][0] < row["click_times"][-1]
+
+
+def test_the_engagement_arrays_are_capped_and_keep_the_most_recent_clicks(raw):
+    """Untruncated, these arrays are copied once per impression -- a 31x
+    duplication on EB-NeRD -- and the first version of this was OOM-killed at
+    10 GB. The cap is what makes it affordable, and it has to keep the *recent*
+    end: every consumer reads the last k clicks, so dropping the tail rather
+    than the head would leave the arrays describing clicks nobody looks at.
+
+    `click_history` itself stays whole, because `n_clicks` counts all of it.
+    """
+    stamp = pd.Timestamp("2023-05-23 07:31:00")
+    long_history = list(range(sources.ENGAGEMENT_WINDOW + 40))
+    write_ebnerd_behaviors("train", [(7, 55, stamp, [11], [11])])
+    write_ebnerd_behaviors("validation", [(8, 56, stamp, [21], [])])
+    write_ebnerd_history("train", [(55, long_history)])
+    write_ebnerd_history("validation", [(56, [3])])
+
+    history = ingest.build_history(EBNERD, ingest.build_behaviors(EBNERD))
+    row = history[history["user_id"] == "55"].iloc[0]
+
+    assert len(row["click_history"]) == len(long_history), "ids are not truncated"
+    assert row["n_clicks"] == len(long_history)
+    for column in ("click_times", "click_read_times", "click_scroll"):
+        assert len(row[column]) == sources.ENGAGEMENT_WINDOW
+
+    # The fixture's read times count up in click order, so the kept window has
+    # to end on the last click rather than start on the first.
+    last = 10.0 * len(long_history)
+    assert row["click_read_times"][-1] == last
+    # And the last k of each array line up, which is the whole alignment rule.
+    k = 5
+    assert list(row["click_read_times"][-k:]) == [
+        10.0 * (len(long_history) - i) for i in range(k - 1, -1, -1)
+    ]
+
+
+def test_a_user_with_no_history_row_gets_empty_parallel_arrays(raw):
+    """The cold user arrives through a right join with nothing on the left. Its
+    click list is empty rather than null, and the arrays beside it have to
+    agree -- a null there would break a `zip` that an empty list satisfies."""
+    stamp = pd.Timestamp("2023-05-23 07:31:00")
+    write_ebnerd_behaviors("train", [(7, 55, stamp, [11], [11])])
+    write_ebnerd_behaviors("validation", [(8, 56, stamp, [21], [])])
+    write_ebnerd_history("train", [])
+    write_ebnerd_history("validation", [])
+
+    history = ingest.build_history(EBNERD, ingest.build_behaviors(EBNERD))
+
+    row = history.iloc[0]
+    assert row["click_history"] == []
+    for column in ("click_times", "click_read_times", "click_scroll"):
+        assert len(row[column]) == 0

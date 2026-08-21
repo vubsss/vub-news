@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 from pathlib import PurePosixPath
 
+import numpy as np
 import pandas as pd
 
 from pipeline.datasets import (
@@ -141,6 +142,23 @@ def build_history(config: DatasetConfig, behaviors: pd.DataFrame) -> pd.DataFram
     # A user can have impressions but no history row at all — a cold user, not
     # a missing row, so the history is empty rather than null.
     frame["click_history"] = frame["click_history"].map(_as_clicks)
+    # The same for the arrays that run parallel to it, and only where the
+    # dataset supplies them. Two different emptinesses meet here: a dataset
+    # with no engagement column at all keeps it null, which `_conform` fills,
+    # while a dataset that has one gives this particular user an empty array —
+    # and only the second may be zipped against the clicks. A null left here
+    # would raise on the first weighting scheme to pair them.
+    for parallel, dtype in (
+        ("click_times", "datetime64[us]"),
+        ("click_read_times", "float32"),
+        ("click_scroll", "float32"),
+    ):
+        if parallel in frame:
+            frame[parallel] = frame[parallel].map(
+                lambda values, dtype=dtype: np.empty(0, dtype=dtype)
+                if values is None or np.isscalar(values)
+                else values
+            )
     frame["n_clicks"] = frame["click_history"].map(len)
     frame["dataset"] = config.name
     return _conform(frame, HISTORY_COLUMNS)

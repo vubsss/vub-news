@@ -8,6 +8,7 @@ new registry entry, and no change to any stage.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 
@@ -98,13 +99,63 @@ def ebnerd_behaviors(raw: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+# How many of a user's most recent clicks the engagement arrays keep.
+#
+# EB-NeRD stores one history row per user and ingest joins it onto every
+# impression, which for this dataset is a 31x duplication -- 15,143 users
+# become 232,887 impressions, each carrying its own copy. At a mean 160 clicks
+# a user, three untruncated arrays are 229 million values per split, and the
+# first attempt at this was OOM-killed at 10 GB.
+#
+# Truncating before the join bounds it. Every consumer takes the last
+# `history_k` clicks, so keeping the last ENGAGEMENT_WINDOW loses nothing a
+# window inside that would have seen -- and the consumer refuses a window
+# larger than this rather than silently pairing arrays that no longer line up.
+# Raising it past 100 means re-running ingest.
+ENGAGEMENT_WINDOW = 100
+
+def _tail(values, dtype: str) -> np.ndarray:
+    """The last ENGAGEMENT_WINDOW entries of one history row's parallel array.
+
+    Truncated *here*, on the per-user frame, rather than after ingest joins it
+    onto impressions: the join is a 31x duplication on this dataset, so an
+    untruncated array is copied 31 times and the first version of this was
+    OOM-killed at 10 GB.
+
+    Kept as a typed numpy array rather than a list of Python objects for the
+    same reason — a Python float costs 32 bytes against float32's 4, which on
+    229 million values is the difference between 7 GB and 900 MB. `scroll` is
+    10.8% null within its arrays, which float32 carries as NaN and a list of
+    Nones would not.
+    """
+    if values is None or (np.isscalar(values) and pd.isna(values)):
+        return np.empty(0, dtype=dtype)
+    return np.asarray(values[-ENGAGEMENT_WINDOW:], dtype=dtype)
+
+
 def ebnerd_history(raw: pd.DataFrame) -> pd.DataFrame:
-    """EB-NeRD keeps one history row per user, with no impression attached."""
+    """EB-NeRD keeps one history row per user, with no impression attached.
+
+    The three `_fixed` columns beside the ids are parallel arrays over the same
+    clicks: when each was read, for how long, and how far down the page. They
+    come through aligned to the **last ENGAGEMENT_WINDOW** entries of
+    `click_history`, so `array[-k:]` corresponds to `click_history[-k:]` for
+    any k inside that window. MIND has no equivalent and carries them as null.
+    """
     return pd.DataFrame(
         {
             "user_id": raw["user_id"].astype(str),
             "click_history": raw["article_id_fixed"].map(
                 lambda ids: [str(i) for i in ids]
+            ),
+            "click_times": raw["impression_time_fixed"].map(
+                lambda v: _tail(v, "datetime64[us]")
+            ),
+            "click_read_times": raw["read_time_fixed"].map(
+                lambda v: _tail(v, "float32")
+            ),
+            "click_scroll": raw["scroll_percentage_fixed"].map(
+                lambda v: _tail(v, "float32")
             ),
         }
     )

@@ -306,9 +306,28 @@ def ebnerd_competition(tmp_path, monkeypatch):
         }
     ).to_parquet(test_dir / "behaviors.parquet", index=False)
     pd.DataFrame(
-        {"user_id": [11], "article_id_fixed": [[2]]}
+        {"user_id": [11], **_engagement([[2]])}
     ).to_parquet(test_dir / "history.parquet", index=False)
     return tmp_path
+
+
+def _engagement(histories):
+    """The click ids plus the three arrays that run parallel to them.
+
+    Every EB-NeRD history file carries all four — train, validation and the
+    competition's own test set alike, checked on the real files — so a fixture
+    with only the ids is a shape the pipeline never actually meets.
+    """
+    stamp = pd.Timestamp("2023-06-01 09:00:00")
+    return {
+        "article_id_fixed": histories,
+        "impression_time_fixed": [
+            [stamp + pd.Timedelta(hours=i) for i in range(len(clicks))]
+            for clicks in histories
+        ],
+        "read_time_fixed": [[12.0] * len(clicks) for clicks in histories],
+        "scroll_percentage_fixed": [[60.0] * len(clicks) for clicks in histories],
+    }
 
 
 def ebnerd_submitted(tmp_path) -> list[str]:
@@ -374,7 +393,7 @@ def test_only_the_clicks_a_retriever_reads_are_kept(ebnerd_competition):
     of EB-NeRD's test histories does not fit in memory alongside the run."""
     path = EBNERD.raw_dir / "testset" / "test" / "history.parquet"
     pd.DataFrame(
-        {"user_id": [11], "article_id_fixed": [[1, 2, 3, 1, 2]]}
+        {"user_id": [11], **_engagement([[1, 2, 3, 1, 2]])}
     ).to_parquet(path, index=False)
 
     kept = predict._histories(EBNERD, history_k=3)

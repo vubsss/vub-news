@@ -39,10 +39,20 @@ BEHAVIOR_COLUMNS = (
     "split",
     "dataset",
 )
+# The three engagement columns are arrays parallel to the *last*
+# `sources.ENGAGEMENT_WINDOW` entries of click_history, one per past click;
+# that module truncates them, and says there why. Every one of them describes a click that has already
+# happened, so every one is available at serving time -- which is what makes
+# them usable at all. MIND ships a bare id list and carries them as null: a
+# dataset that has no such column has a null column, never a missing one, so
+# no stage has to ask which dataset it is holding.
 HISTORY_COLUMNS = (
     "user_id",
     "impression_id",
     "click_history",
+    "click_times",
+    "click_read_times",
+    "click_scroll",
     "n_clicks",
     "dataset",
 )
@@ -67,6 +77,9 @@ COLUMN_DTYPES = {
     "labels": "object",
     "split": "string",
     "click_history": "object",
+    "click_times": "object",
+    "click_read_times": "object",
+    "click_scroll": "object",
     "n_clicks": "int64",
 }
 
@@ -392,6 +405,13 @@ MIND = DatasetConfig(
             "user_id": "user_id",
             "impression_id": "impression_id",
             "click_history": "history",
+            # MIND's history is a bare id list: no timestamp on a past click
+            # and no engagement with it. Null columns rather than absent ones,
+            # so the schema is the same shape for both datasets and the
+            # weighting schemes that need them are simply unavailable here.
+            "click_times": None,
+            "click_read_times": None,
+            "click_scroll": None,
             "n_clicks": DERIVED,
             "dataset": DERIVED,
         },
@@ -570,6 +590,12 @@ EBNERD = DatasetConfig(
             # History is a separate table here; joined onto behaviors.
             "impression_id": DERIVED,
             "click_history": "article_id_fixed",
+            # Parallel arrays over the same clicks, all three describing a
+            # click that already happened and so all three available at
+            # serving time.
+            "click_times": "impression_time_fixed",
+            "click_read_times": "read_time_fixed",
+            "click_scroll": "scroll_percentage_fixed",
             "n_clicks": DERIVED,
             "dataset": DERIVED,
         },

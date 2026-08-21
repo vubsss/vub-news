@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from pipeline import paths, stages
+from pipeline import paths, stages, timings
 from pipeline.acquire import AcquisitionError
 from pipeline.datasets import DATASETS, DatasetConfig
 from pipeline.embed import EmbeddingError
@@ -48,6 +48,10 @@ def print_plan(datasets: list[DatasetConfig], forced: set[str]) -> None:
 
 def run(datasets: list[DatasetConfig], forced: set[str]) -> None:
     ran = skipped = not_built = 0
+    # One identifier for everything this invocation measures. A build skips
+    # the stages it has already done, so the nine costs Phase 9 reports are
+    # gathered over several runs and each row has to say which it came from.
+    started = timings.now()
     for stage in STAGES:
         for dataset in datasets:
             state = status(stage, dataset, forced)
@@ -59,7 +63,8 @@ def run(datasets: list[DatasetConfig], forced: set[str]) -> None:
                 continue
             print(f"  running {stage.name} [{dataset.name}] ...")
             try:
-                stage.run(dataset, stage.name in forced)
+                with timings.measure(stage.name, dataset.name, started):
+                    stage.run(dataset, stage.name in forced)
             except NotBuilt as reason:
                 # No checkpoint: the ticket that builds this stage for this
                 # dataset would otherwise land into a rebuild that skips it.
@@ -68,6 +73,9 @@ def run(datasets: list[DatasetConfig], forced: set[str]) -> None:
                 continue
             stages.mark_done(stage, dataset)
             ran += 1
+
+    if ran:
+        print(f"  cost per stage in {timings.write_document()}")
 
     print(
         f"\n  {ran} ran, {skipped} already done, "

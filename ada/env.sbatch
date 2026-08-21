@@ -56,6 +56,25 @@ fi
 
 echo "installing pinned requirements ..."
 "$ENV_DIR/bin/python" -m pip install --no-input -q --upgrade pip
+
+# torch first, and from the CPU-only index, because PyPI's wheel drags in
+# ~2.5 GB of nvidia-* CUDA runtime behind it. Ada's link to PyPI runs at about
+# 0.22 MB/s -- measured, not guessed: the first attempt at this took 28 minutes
+# to fetch 200 MB of torch and would have hit its two-hour walltime somewhere
+# inside the CUDA wheels.
+#
+# Nothing this environment runs needs them. `pipeline/embed.py` imports torch
+# lazily, inside `encode()`, and both datasets' vectors reach the pipeline as
+# cached artifacts rather than being encoded here; the suite reaches it through
+# `pytest.importorskip`. Phase 7 is the stage that wants a GPU, and it wants a
+# separate environment anyway.
+#
+# `==2.13.0` matches the index's `2.13.0+cpu` -- a specifier with no local
+# version admits any local version -- so requirements.txt is satisfied by this
+# and the line below leaves it alone.
+"$ENV_DIR/bin/python" -m pip install --no-input -q \
+    --index-url https://download.pytorch.org/whl/cpu torch==2.13.0
+
 "$ENV_DIR/bin/python" -m pip install --no-input -q -r "$REPO/requirements.txt"
 
 echo "--- versions ---"

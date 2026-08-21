@@ -4,7 +4,7 @@ import dataclasses
 
 import pandas as pd
 
-from pipeline import lexical_ablation
+from pipeline import evaluate, lexical_ablation
 from pipeline.datasets import DATASETS, LexicalSpec
 
 MIND = DATASETS["mind"]
@@ -48,7 +48,7 @@ def test_labels_are_read_through_the_ranking_not_the_candidate_order():
 
     Here the clicked article `c` is ranked first, so every metric is perfect.
     """
-    values = lexical_ablation.accuracy(
+    values = evaluate.per_impression_metrics(
         ranked([(["c", "a", "b"], [9.0, 2.0, 1.0])]), [{"a": 0, "b": 0, "c": 1}]
     )
 
@@ -60,7 +60,7 @@ def test_labels_are_read_through_the_ranking_not_the_candidate_order():
 def test_a_degenerate_impression_is_left_out_of_every_metric():
     """No positive candidate or every candidate positive: AUC, MRR and nDCG are
     all undefined, and the harness counts those out rather than scoring zero."""
-    values = lexical_ablation.accuracy(
+    values = evaluate.per_impression_metrics(
         ranked([(["a", "b"], [1.0, 0.5]), (["a", "b"], [1.0, 0.5])]),
         [{"a": 0, "b": 0}, {"a": 1, "b": 1}],
     )

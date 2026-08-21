@@ -354,6 +354,34 @@ def measure(
     return values, shown, population, degenerate
 
 
+def per_impression_metrics(ranked: pd.DataFrame, label_of: list[dict[str, int]]) -> dict[str, np.ndarray]:
+    """Per-impression AUC, MRR and nDCG, computed the harness's way.
+
+    Every caller that scores a supplied candidate list wants exactly these
+    four, per impression, so they can be bootstrapped paired.
+
+    `score_candidates` returns scores sorted best-first and aligned to
+    `ranked_ids`, so the labels are read back through the ids rather than
+    zipped against the candidate order — the mistake that gave phase 3 a whole
+    grid of coin flips. AUC comes from the scores and the rank metrics from the
+    order, which is the split `evaluate.measure` makes for the same reason:
+    AUC handles ties by construction and a rank metric has to break them.
+    """
+    values: dict[str, list[float]] = {metric: [] for metric in ACCURACY_METRICS}
+    for ids, scores, labels in zip(ranked["ranked_ids"], ranked["scores"], label_of):
+        relevance = np.array([labels[article] for article in ids])
+        if relevance.sum() == 0 or relevance.sum() == len(relevance):
+            continue
+        against = np.asarray(scores, dtype="float64")
+        values["auc"].append(
+            0.5 if np.ptp(against) == 0 else roc_auc_score(relevance, against)
+        )
+        values["mrr"].append(reciprocal_rank(relevance))
+        for depth in NDCG_DEPTHS:
+            values[f"ndcg@{depth}"].append(ndcg(relevance, depth))
+    return {metric: np.asarray(v) for metric, v in values.items()}
+
+
 def summarise(
     rows: np.ndarray, values: np.ndarray, shown: np.ndarray, size: int
 ) -> tuple[np.ndarray, np.ndarray]:

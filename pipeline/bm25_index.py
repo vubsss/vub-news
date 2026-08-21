@@ -500,7 +500,7 @@ def query_weights(
     spec = config.weighting
     if spec.scheme == "uniform":
         return None
-    weighting.check(config, spec.scheme)
+    weighting.check(config, spec.scheme, history_k)
 
     columns = {
         name: (history[name] if name in history else None)

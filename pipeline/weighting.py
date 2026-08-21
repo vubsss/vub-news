@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from pipeline import sources
 from pipeline.datasets import DatasetConfig
 
 SCHEMES = ("uniform", "position", "time", "engagement")
@@ -57,7 +58,7 @@ def available(config: DatasetConfig) -> tuple[str, ...]:
     return tuple(schemes)
 
 
-def check(config: DatasetConfig, scheme: str) -> None:
+def check(config: DatasetConfig, scheme: str, history_k: int | None = None) -> None:
     """That this dataset can express the scheme, before anything is computed.
 
     Loudly, because the alternative is a run that silently falls back to
@@ -71,6 +72,20 @@ def check(config: DatasetConfig, scheme: str) -> None:
         raise WeightingError(
             f"{config.name} cannot weight by {scheme!r}: its history carries no "
             f"such column. Available here: {', '.join(available(config))}"
+        )
+    # The engagement arrays are truncated at ingest, so past that point
+    # `times[-k:]` and `clicks[-k:]` are different lengths and every weight
+    # lands on the wrong click. Refused rather than clipped, because clipping
+    # would silently weight a 160-click window as if it were a 100-click one.
+    if (
+        history_k is not None
+        and scheme in ("time", "engagement")
+        and history_k > sources.ENGAGEMENT_WINDOW
+    ):
+        raise WeightingError(
+            f"{scheme!r} weighting cannot reach back {history_k} clicks: the "
+            f"engagement arrays keep the last {sources.ENGAGEMENT_WINDOW}. "
+            f"Raise sources.ENGAGEMENT_WINDOW and re-run ingest."
         )
 
 

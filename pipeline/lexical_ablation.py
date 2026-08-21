@@ -35,7 +35,6 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import roc_auc_score
 
 from pipeline import bm25_index, embed_compare, evaluate, paths, preprocess, retrieval
 from pipeline.datasets import DATASETS, DatasetConfig, LexicalSpec
@@ -46,8 +45,6 @@ INHERITED = LexicalSpec(k1=1.5, b=0.75, title_weight=1)
 
 RESULTS = "lexical-ablation-{suffix}.jsonl"
 DOCUMENT = "lexical-ablation-{suffix}.md"
-
-METRICS = ("auc", "mrr", "ndcg@5", "ndcg@10")
 
 
 @dataclass(frozen=True)
@@ -91,31 +88,6 @@ def settings(config: DatasetConfig) -> list[Setting]:
     return rows
 
 
-def accuracy(ranked: pd.DataFrame, label_of: list[dict[str, int]]) -> dict[str, np.ndarray]:
-    """Per-impression AUC, MRR and nDCG, computed the harness's way.
-
-    `score_candidates` returns scores sorted best-first and aligned to
-    `ranked_ids`, so the labels are read back through the ids rather than
-    zipped against the candidate order — the mistake that gave phase 3 a whole
-    grid of coin flips. AUC comes from the scores and the rank metrics from the
-    order, which is the split `evaluate.measure` makes for the same reason:
-    AUC handles ties by construction and a rank metric has to break them.
-    """
-    values: dict[str, list[float]] = {metric: [] for metric in METRICS}
-    for ids, scores, labels in zip(ranked["ranked_ids"], ranked["scores"], label_of):
-        relevance = np.array([labels[article] for article in ids])
-        if relevance.sum() == 0 or relevance.sum() == len(relevance):
-            continue
-        against = np.asarray(scores, dtype="float64")
-        values["auc"].append(
-            0.5 if np.ptp(against) == 0 else roc_auc_score(relevance, against)
-        )
-        values["mrr"].append(evaluate.reciprocal_rank(relevance))
-        for depth in evaluate.NDCG_DEPTHS:
-            values[f"ndcg@{depth}"].append(evaluate.ndcg(relevance, depth))
-    return {metric: np.asarray(v) for metric, v in values.items()}
-
-
 def run(config: DatasetConfig, split: str, resamples: int) -> list[dict]:
     articles = pd.read_parquet(config.feature_store_dir / "articles.parquet")
     scored = embed_compare.impressions(config, split)
@@ -149,7 +121,9 @@ def run(config: DatasetConfig, split: str, resamples: int) -> list[dict]:
             with_abstract=setting.with_abstract,
         )
 
-        values = accuracy(index.score_candidates(queries, candidates), label_of)
+        values = evaluate.per_impression_metrics(
+            index.score_candidates(queries, candidates), label_of
+        )
         found = retrieval.recall_at_k(
             index.retrieve(queries, depth=max(retrieval.DEPTHS)),
             scored,

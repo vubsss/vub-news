@@ -40,6 +40,21 @@ def test_asking_mind_for_time_decay_fails_loudly():
         weighting.check(MIND, "time")
 
 
+def test_a_window_past_the_stored_arrays_is_refused_not_clipped():
+    """The arrays are truncated at ingest, so past that point `times[-k:]` and
+    `clicks[-k:]` are different lengths and every weight lands on the wrong
+    click. Clipping would silently weight a 160-click window as a 100-click
+    one and report it under the larger number."""
+    from pipeline import sources
+
+    beyond = sources.ENGAGEMENT_WINDOW + 1
+    with pytest.raises(weighting.WeightingError, match="cannot reach back"):
+        weighting.check(EBNERD, "time", beyond)
+
+    # position needs no stored array, so it reaches as far as the clicks do.
+    weighting.check(EBNERD, "position", beyond)
+
+
 def test_an_unknown_scheme_is_refused():
     with pytest.raises(weighting.WeightingError, match="unknown weighting"):
         weighting.check(EBNERD, "exponential-ish")

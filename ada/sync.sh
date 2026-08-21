@@ -3,6 +3,7 @@
 #
 #     ada/sync.sh code       laptop  ->  ada:/home     the repo, minus the bulk
 #     ada/sync.sh data       laptop  ->  ada:/home     raw archives, ~3.4 GB
+#     ada/sync.sh artifacts  laptop  ->  ada:/home     computed artifacts
 #     ada/sync.sh park                   ada:/home -> ada:/share1   (on Ada)
 #     ada/sync.sh pull       ada:/home  ->  laptop     artifacts and results
 #
@@ -43,6 +44,15 @@ case "${1:-}" in
     rsync -az --info=stats1 --relative \
       "$REPO/./data/raw/mind/_archives" "$REPO/./data/raw/ebnerd/_archives" \
       "$HOST:$REMOTE-data/"
+    ;;
+
+  artifacts)
+    # MIND's embedding artifact, and anything else already computed. The embed
+    # stage would otherwise fetch the vectors from Drive with gdown, which is
+    # 100 MB down a link that gives PyPI 0.22 MB/s -- while this ssh hop runs
+    # at 10, and cannot half-succeed forty minutes into a queued job.
+    rsync -az --info=stats1 --rsync-path="mkdir -p $REMOTE-run/artifacts && rsync" \
+      "$REPO/artifacts/" "$HOST:$REMOTE-run/artifacts/"
     ;;
 
   park)

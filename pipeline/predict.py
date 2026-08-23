@@ -329,7 +329,9 @@ def write(
     workdir = config.artifacts_dir / WORK_DIR
     rank_with = module.ranker(articles, config, workdir, history_k)
 
-    destination = paths.PREDICTIONS_DIR / config.name / spec.filename
+    destination = (
+        paths.PREDICTIONS_DIR / config.name / f"{retriever}-{spec.filename}"
+    )
     destination.parent.mkdir(parents=True, exist_ok=True)
     partial = destination.with_name(destination.name + ".part")
 
@@ -396,14 +398,27 @@ def _check_alignment(chunk: pd.DataFrame, ranked: pd.DataFrame) -> None:
         )
 
 
-def bundle(prediction: Path, config: DatasetConfig) -> Path:
+def bundle_for(config: DatasetConfig, retriever: str) -> Path:
+    """Where this retriever's submission zip goes.
+
+    The retriever is in the *archive* name and never in the prediction file
+    inside it: CodaBench looks for an exact filename, so renaming that would
+    fail the upload, while the archive name is ours. Three retrievers per
+    dataset would otherwise write over each other and the last one to run
+    would silently be the submission.
+    """
+    stem = Path(config.submission.bundle).stem
+    return paths.PREDICTIONS_DIR / f"{stem}-{retriever}.zip"
+
+
+def bundle(prediction: Path, config: DatasetConfig, retriever: str) -> Path:
     """Zip the prediction file under the name the leaderboard looks for.
 
     Written with `arcname` so the archive holds a bare file: CodaBench rejects
     a submission whose prediction file sits inside a directory, and a zip built
     from a path keeps the path.
     """
-    archive = paths.PREDICTIONS_DIR / config.submission.bundle
+    archive = bundle_for(config, retriever)
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zipped:
         zipped.write(prediction, arcname=config.submission.filename)
     return archive
@@ -429,14 +444,14 @@ def submit(
     force: bool = False,
 ) -> Path:
     spec = config.submission
-    archive = paths.PREDICTIONS_DIR / spec.bundle
+    archive = bundle_for(config, retriever)
     if archive.exists() and not force:
         print(f"    {archive} is already built")
         return archive
 
     acquire.ensure(config, spec.archives, spec.expected_files, spec.token_env)
     prediction, report = write(config, retriever, history_k, chunk_size)
-    archive = bundle(prediction, config)
+    archive = bundle(prediction, config, retriever)
 
     total = report["impressions"]
     print(

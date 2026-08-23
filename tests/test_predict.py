@@ -126,8 +126,8 @@ def competition(tmp_path, monkeypatch):
     return tmp_path
 
 
-def submitted(tmp_path) -> list[str]:
-    archive = tmp_path / "predictions" / MIND.submission.bundle
+def submitted(tmp_path, retriever="bm25") -> list[str]:
+    archive = tmp_path / "predictions" / predict.bundle_for(MIND, retriever).name
     with zipfile.ZipFile(archive) as zipped:
         assert zipped.namelist() == [MIND.submission.filename]
         return zipped.read(MIND.submission.filename).decode().splitlines()
@@ -171,7 +171,9 @@ def test_a_ranking_for_the_wrong_impressions_never_reaches_the_file(
 
     with pytest.raises(predict.SubmissionError, match="different order"):
         predict.submit(MIND, retriever="bm25")
-    assert not (competition / "predictions" / MIND.submission.bundle).exists()
+    assert not (
+        competition / "predictions" / predict.bundle_for(MIND, "bm25").name
+    ).exists()
 
 
 def test_a_short_file_is_not_left_behind_as_a_submission(competition, monkeypatch):
@@ -337,8 +339,8 @@ def _engagement(histories):
     }
 
 
-def ebnerd_submitted(tmp_path) -> list[str]:
-    archive = tmp_path / "predictions" / EBNERD.submission.bundle
+def ebnerd_submitted(tmp_path, retriever="bm25") -> list[str]:
+    archive = tmp_path / "predictions" / predict.bundle_for(EBNERD, retriever).name
     with zipfile.ZipFile(archive) as zipped:
         assert zipped.namelist() == [EBNERD.submission.filename]
         return zipped.read(EBNERD.submission.filename).decode().splitlines()

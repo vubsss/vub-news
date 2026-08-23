@@ -36,6 +36,23 @@ def history(rows):
     )
 
 
+def stored(rows):
+    """The history as the feature store keeps it: one row per (user, source).
+
+    `history` above is the per-impression view the ranking functions are handed;
+    this is what `ingest.history_for` rebuilds it from. These fixtures give each
+    impression its own user, so the two are 1:1 and the ids line up.
+    """
+    return pd.DataFrame(
+        {
+            "user_id": pd.Series([f"u-{row[0]}" for row in rows], dtype="string"),
+            "source": pd.Series(["train"] * len(rows), dtype="string"),
+            "click_history": [list(row[1]) for row in rows],
+            "n_clicks": [len(row[1]) for row in rows],
+        }
+    )
+
+
 def test_a_user_vector_is_the_mean_of_the_rows_its_clicks_point_at():
     """The exact expected vector, from geometry rather than from rerunning the
     code: clicking (1,0) and (0,1) puts the user at their mean (0.5,0.5), which
@@ -178,6 +195,8 @@ def test_run_reports_recall_on_the_validation_split(store, capsys):
     pd.DataFrame(
         {
             "impression_id": pd.Series(["d1", "d2", "d3"], dtype="string"),
+            "user_id": pd.Series(["u-d1", "u-d2", "u-d3"], dtype="string"),
+            "source": pd.Series(["train"] * 3, dtype="string"),
             "candidate_ids": [["a3", "a2"], ["a1"], ["a1"]],
             "labels": [[1, 0], [1], [1]],
             "split": pd.Series(
@@ -185,7 +204,7 @@ def test_run_reports_recall_on_the_validation_split(store, capsys):
             ),
         }
     ).to_parquet(store / "behaviors.parquet", index=False)
-    history(
+    stored(
         [("d1", ["a1"]), ("d2", []), ("d3", ["a1"])]
     ).to_parquet(store / "history.parquet", index=False)
 

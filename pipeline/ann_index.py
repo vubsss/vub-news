@@ -21,7 +21,7 @@ import faiss
 import numpy as np
 import pandas as pd
 
-from pipeline import embed, retrieval, weighting
+from pipeline import embed, ingest, retrieval, weighting
 from pipeline.datasets import DatasetConfig
 
 
@@ -399,7 +399,12 @@ def run(config: DatasetConfig, force: bool = False) -> None:
     """Build the index, retrieve for the validation split, report recall@K."""
     embeddings = embed.load(config)
     behaviors = pd.read_parquet(config.feature_store_dir / "behaviors.parquet")
-    history = pd.read_parquet(config.feature_store_dir / "history.parquet")
+    # Only the split this stage retrieves for: the per-impression view is
+    # rebuilt on demand, so building it for impressions nobody scores is work
+    # and memory spent on nothing.
+    history = ingest.history_for(
+        config, behaviors[behaviors["split"] == retrieval.VALIDATION]
+    )
 
     started = time.perf_counter()
     index = build(embeddings)

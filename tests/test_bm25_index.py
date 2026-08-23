@@ -39,6 +39,23 @@ def history(rows):
     )
 
 
+def stored(rows):
+    """The history as the feature store keeps it: one row per (user, source).
+
+    `history` above is the per-impression view the ranking functions are handed;
+    this is what `ingest.history_for` rebuilds it from. These fixtures give each
+    impression its own user, so the two are 1:1 and the ids line up.
+    """
+    return pd.DataFrame(
+        {
+            "user_id": pd.Series([f"u-{row[0]}" for row in rows], dtype="string"),
+            "source": pd.Series(["train"] * len(rows), dtype="string"),
+            "click_history": [list(row[1]) for row in rows],
+            "n_clicks": [len(row[1]) for row in rows],
+        }
+    )
+
+
 def test_a_query_is_the_last_k_clicked_titles_cleaned():
     """The spec's query construction. The window is the *last* K clicks, so
     the oldest one here must not appear — a query built from the first K would
@@ -288,9 +305,13 @@ def write_store(store):
     frame["split"] = pd.Series(
         ["validation", "validation", "train"], dtype="string"
     )
+    frame["user_id"] = pd.Series(
+        [f"u-{i}" for i in frame["impression_id"]], dtype="string"
+    )
+    frame["source"] = pd.Series(["train"] * len(frame), dtype="string")
     frame.to_parquet(store / "behaviors.parquet", index=False)
 
-    history(
+    stored(
         [("dev-1", ["a2"]), ("dev-2", []), ("dev-3", ["a1"])]
     ).to_parquet(store / "history.parquet", index=False)
 

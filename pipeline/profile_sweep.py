@@ -44,6 +44,7 @@ from pipeline import (
     bm25_index,
     embed_compare,
     evaluate,
+    ingest,
     paths,
     retrieval,
     weighting,
@@ -159,9 +160,8 @@ def run(
 ) -> list[dict]:
     store = config.feature_store_dir
     behaviors = pd.read_parquet(store / "behaviors.parquet")
-    history = pd.read_parquet(store / "history.parquet")
     impressions = behaviors[behaviors["split"] == split]
-    history = history[history["impression_id"].isin(set(impressions["impression_id"]))]
+    history = ingest.history_for(config, impressions)
     print(f"  {len(impressions):,} {split} impressions", flush=True)
 
     rows: list[dict] = []
@@ -346,9 +346,8 @@ def decay_pass(
 
     store = config.feature_store_dir
     behaviors = pd.read_parquet(store / "behaviors.parquet")
-    history = pd.read_parquet(store / "history.parquet")
     impressions = behaviors[behaviors["split"] == split]
-    history = history[history["impression_id"].isin(set(impressions["impression_id"]))]
+    history = ingest.history_for(config, impressions)
 
     schemes = [
         (scheme, decay)

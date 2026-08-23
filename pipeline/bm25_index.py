@@ -16,7 +16,7 @@ import bm25s
 import numpy as np
 import pandas as pd
 
-from pipeline import preprocess, retrieval, weighting
+from pipeline import ingest, preprocess, retrieval, weighting
 from pipeline.datasets import DatasetConfig
 
 # The article ids, saved next to the bm25s index, which does not store them.
@@ -361,7 +361,12 @@ def run(config: DatasetConfig, force: bool = False) -> None:
     """Build the index, retrieve for the validation split, report recall@K."""
     articles = pd.read_parquet(config.feature_store_dir / "articles.parquet")
     behaviors = pd.read_parquet(config.feature_store_dir / "behaviors.parquet")
-    history = pd.read_parquet(config.feature_store_dir / "history.parquet")
+    # Only the split this stage retrieves for: the per-impression view is
+    # rebuilt on demand, so building it for impressions nobody scores is work
+    # and memory spent on nothing.
+    history = ingest.history_for(
+        config, behaviors[behaviors["split"] == retrieval.VALIDATION]
+    )
 
     directory = config.artifacts_dir / "bm25"
     if force or not (directory / ARTICLE_IDS).exists():

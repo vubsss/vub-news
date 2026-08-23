@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from pipeline import paths, split
+from pipeline import ingest, paths, split
 from pipeline.datasets import DATASETS, SplitSpec
 
 MIND = DATASETS["mind"]
@@ -14,6 +14,11 @@ def behaviors(times, candidates=None):
     return pd.DataFrame(
         {
             "impression_id": [f"i{i}" for i in range(len(times))],
+            # One user per impression, and the other half of the history
+            # table's key. `check_leakage` reads the per-impression view that
+            # `ingest.history_for` rebuilds from it.
+            "user_id": pd.Series([f"u{i}" for i in range(len(times))], dtype="string"),
+            "source": pd.Series(["train"] * len(times), dtype="string"),
             "impression_time": pd.to_datetime(list(times)),
             "candidate_ids": candidates or [[] for _ in times],
             "split": pd.Series([None] * len(times), dtype="string"),
@@ -71,11 +76,23 @@ def articles(rows):
     )
 
 
+def joined(history, impressions):
+    """The per-impression view `check_leakage` is handed in production."""
+    return ingest.per_impression(history, impressions)
+
+
 def history(rows):
-    """rows: (impression_id, click_history)"""
+    """rows: (impression_id, click_history) — stored keyed by its user.
+
+    The ids are `iN` and the users `uN`, one apiece, so a row named for an
+    impression here is the history of the user that impression belongs to.
+    """
     return pd.DataFrame(
         {
-            "impression_id": pd.Series([row[0] for row in rows], dtype="string"),
+            "user_id": pd.Series(
+                [row[0].replace("i", "u") for row in rows], dtype="string"
+            ),
+            "source": pd.Series(["train"] * len(rows), dtype="string"),
             "click_history": [list(row[1]) for row in rows],
         }
     )
@@ -90,11 +107,11 @@ def test_a_click_on_an_article_published_later_aborts_the_run():
     )
 
     clean = history([("i0", ["a1"]), ("i1", ["a1"])])
-    split.check_leakage(impressions, clean, catalogue)
+    split.check_leakage(impressions, joined(clean, impressions), catalogue)
 
     leaked = history([("i0", ["a1", "a2"]), ("i1", ["a1"])])
     with pytest.raises(split.LeakageError, match="a2"):
-        split.check_leakage(impressions, leaked, catalogue)
+        split.check_leakage(impressions, joined(leaked, impressions), catalogue)
 
 
 def test_an_already_clicked_candidate_is_counted_not_assumed_impossible():
@@ -110,7 +127,7 @@ def test_an_already_clicked_candidate_is_counted_not_assumed_impossible():
     )
     clicks = history([("i0", ["a1"]), ("i1", ["a1", "a4"]), ("i2", [])])
 
-    report = split.check_leakage(impressions, clicks, catalogue)
+    report = split.check_leakage(impressions, joined(clicks, impressions), catalogue)
 
     # Only i0 re-offers an article its own user already clicked.
     assert report["impressions"] == 3

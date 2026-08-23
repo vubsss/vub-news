@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pipeline import ann_index, bm25_index, evaluate, paths
+from pipeline import ann_index, bm25_index, evaluate, ingest, paths
 from pipeline.datasets import DATASETS
 
 MIND = DATASETS["mind"]
@@ -36,6 +36,11 @@ def behaviours(rows, split="validation", day="2019-11-14"):
     return pd.DataFrame(
         {
             "impression_id": pd.Series([r[0] for r in rows], dtype="string"),
+            # One user per impression, which keeps these fixtures 1:1 with the
+            # history table now that it is keyed by the user rather than the
+            # impression. `source` is the other half of that key.
+            "user_id": pd.Series([f"u-{r[0]}" for r in rows], dtype="string"),
+            "source": pd.Series(["train"] * len(rows), dtype="string"),
             "impression_time": pd.to_datetime([day] * len(rows)),
             "candidate_ids": [list(r[1]) for r in rows],
             "labels": [list(r[2]) for r in rows],
@@ -45,10 +50,11 @@ def behaviours(rows, split="validation", day="2019-11-14"):
 
 
 def histories(rows):
-    """rows: (impression_id, n_clicks)"""
+    """rows: (impression_id, n_clicks) — keyed by the user it belongs to."""
     return pd.DataFrame(
         {
-            "impression_id": pd.Series([r[0] for r in rows], dtype="string"),
+            "user_id": pd.Series([f"u-{r[0]}" for r in rows], dtype="string"),
+            "source": pd.Series(["train"] * len(rows), dtype="string"),
             "click_history": [["a1"] * r[1] for r in rows],
             "n_clicks": [r[1] for r in rows],
         }
@@ -215,11 +221,14 @@ def test_impressions_that_lost_their_ranking_are_an_error_not_a_shorter_table():
     """The ones a retriever drops are the hard ones — users with no history to
     build a query from — so letting them fall out of the join would quietly
     raise every metric in the report."""
+    shown = behaviours([("d1", ["a1"], [1]), ("d2", ["a1"], [1])])
     with pytest.raises(evaluate.EvaluationError, match="came back paired"):
         evaluate.paired(
             ranked([("d1", ["a1"], [1.0])]),
-            behaviours([("d1", ["a1"], [1]), ("d2", ["a1"], [1])]),
-            histories([("d1", 3), ("d2", 3)]),
+            shown,
+            # `paired` is handed the per-impression view, which is what
+            # `evaluate.run` builds from the user-keyed table.
+            ingest.per_impression(histories([("d1", 3), ("d2", 3)]), shown),
         )
 
 

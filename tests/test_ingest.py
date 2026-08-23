@@ -268,8 +268,8 @@ def test_mind_history_splits_the_click_string(raw):
     warm = history[history["user_id"] == "U1"].iloc[0]
     assert warm["click_history"] == ["N1", "N2", "N3"]
     assert warm["n_clicks"] == 3
-    # Every history row belongs to a real impression.
-    assert warm["impression_id"] in set(behaviors["impression_id"])
+    # Keyed by the user and the file it was read from, not by impression.
+    assert warm["source"] == "train"
 
     # A user with no history at all is a cold user, not a missing row.
     cold = history[history["user_id"] == "U2"].iloc[0]
@@ -316,16 +316,23 @@ def test_ebnerd_history_is_joined_onto_every_impression(raw):
     history = ingest.build_history(EBNERD, behaviors)
 
     assert list(history.columns) == list(HISTORY_COLUMNS)
-    # One history row per impression, not per user.
-    assert len(history) == len(behaviors)
-    assert set(history["impression_id"]) == set(behaviors["impression_id"])
+    # One row per user per source file, **not** per impression — which is the
+    # whole of phase 8's schema change. User 55 has two impressions in `train`
+    # and one history row for them.
+    assert len(history) == 1
+    assert history.iloc[0]["user_id"] == "55"
+    assert history.iloc[0]["click_history"] == ["1", "2", "3"]
+    assert history.iloc[0]["n_clicks"] == 3
+    assert "impression_id" not in history
 
-    warm = history[history["user_id"] == "55"]
-    assert len(warm) == 2
-    assert warm.iloc[0]["click_history"] == ["1", "2", "3"]
-    assert warm.iloc[0]["n_clicks"] == 3
+    # And the per-impression view is rebuilt from it on demand, cold users
+    # included: user 56 has an impression and no history row anywhere.
+    view = ingest.per_impression(history, behaviors)
+    assert len(view) == len(behaviors)
+    assert set(view["impression_id"]) == set(behaviors["impression_id"])
+    assert len(view[view["user_id"] == "55"]) == 2
 
-    cold = history[history["user_id"] == "56"].iloc[0]
+    cold = view[view["user_id"] == "56"].iloc[0]
     assert cold["click_history"] == []
     assert cold["n_clicks"] == 0
 
@@ -438,10 +445,23 @@ def test_real_downloaded_data_ingests(config):
     assert behaviors["impression_time"].dtype == "datetime64[us]"
     assert behaviors["impression_time"].dt.tz is None
     assert not behaviors["impression_time"].isna().any()
-    assert len(history) == len(behaviors)
     assert (
         behaviors["candidate_ids"].map(len) == behaviors["labels"].map(len)
     ).all()
+
+    # One history row per user per source file, and never more than one — the
+    # guarantee that lets the table be keyed by them at all. On real data,
+    # because that is where a user with two differently sized histories inside
+    # one file would show up, and no fixture would contain one.
+    assert not history.duplicated(ingest.HISTORY_KEYS).any()
+
+    # And the per-impression view every ranking stage reads comes back whole:
+    # one row per impression, none lost, none invented.
+    view = ingest.per_impression(history, behaviors)
+    assert len(view) == len(behaviors)
+    assert set(view["impression_id"]) == set(behaviors["impression_id"])
+    # The redundancy the schema change removed, stated as a number.
+    assert len(history) < len(behaviors)
 
 
 def test_history_is_matched_within_its_own_split(raw):
@@ -456,8 +476,16 @@ def test_history_is_matched_within_its_own_split(raw):
     behaviors = ingest.build_behaviors(EBNERD)
     history = ingest.build_history(EBNERD, behaviors)
 
-    assert len(history) == len(behaviors) == 2
-    by_impression = history.set_index("impression_id")
+    # Two rows for one user, because the user genuinely has two histories.
+    # Keying by user alone would collapse them and apply the later snapshot to
+    # the earlier period's impressions — future clicks in a past ranking.
+    assert len(history) == 2
+    assert set(history["user_id"]) == {"55"}
+    assert dict(zip(history["source"], history["n_clicks"])) == {
+        "train": 2, "validation": 4,
+    }
+
+    by_impression = ingest.per_impression(history, behaviors).set_index("impression_id")
     assert by_impression.loc["train-7", "n_clicks"] == 2
     assert by_impression.loc["validation-8", "n_clicks"] == 4
 
@@ -544,18 +572,64 @@ def test_the_engagement_arrays_are_capped_and_keep_the_most_recent_clicks(raw):
 
 
 def test_a_user_with_no_history_row_gets_empty_parallel_arrays(raw):
-    """The cold user arrives through a right join with nothing on the left. Its
-    click list is empty rather than null, and the arrays beside it have to
-    agree -- a null there would break a `zip` that an empty list satisfies."""
+    """The cold user has no history row at all now, so it arrives through the
+    left join in `history_for`. Its click list is empty rather than null, and
+    the arrays beside it have to agree -- a null there would break a `zip` that
+    an empty list satisfies."""
     stamp = pd.Timestamp("2023-05-23 07:31:00")
     write_ebnerd_behaviors("train", [(7, 55, stamp, [11], [11])])
     write_ebnerd_behaviors("validation", [(8, 56, stamp, [21], [])])
     write_ebnerd_history("train", [])
     write_ebnerd_history("validation", [])
 
-    history = ingest.build_history(EBNERD, ingest.build_behaviors(EBNERD))
-
-    row = history.iloc[0]
+    behaviors = ingest.build_behaviors(EBNERD)
+    history = ingest.build_history(EBNERD, behaviors)
+    row = ingest.per_impression(history, behaviors).iloc[0]
     assert row["click_history"] == []
     for column in ("click_times", "click_read_times", "click_scroll"):
         assert len(row[column]) == 0
+
+
+def test_a_history_that_grows_inside_one_file_is_refused_not_collapsed(raw):
+    """The assumption the whole schema change rests on, and the reason it is
+    checked rather than trusted.
+
+    Keying history by the user is lossless only if a user's history really is
+    constant within one source file. MINDsmall satisfies that — 94,057 users,
+    not one with two different histories — and phase 8 exists to move onto
+    MINDlarge, which nobody has checked. Silently keeping the first row would
+    rank later impressions on a history that stops before them.
+    """
+    write_mind_behaviors(
+        "train",
+        [
+            ("1", "U1", "11/11/2019 9:05:58 AM", "N1 N2", "N3-1"),
+            ("2", "U1", "11/11/2019 9:06:58 AM", "N1 N2 N3", "N3-1"),
+        ],
+    )
+    write_mind_behaviors("dev", [("1", "U9", "11/15/2019 7:00:00 PM", "", "N3-0")])
+
+    behaviors = ingest.build_behaviors(MIND)
+    with pytest.raises(ingest.SchemaError, match="differently sized histories"):
+        ingest.build_history(MIND, behaviors)
+
+
+def test_one_history_repeated_across_impressions_collapses_cleanly(raw):
+    """The ordinary case: the same user, several impressions, one history."""
+    write_mind_behaviors(
+        "train",
+        [
+            ("1", "U1", "11/11/2019 9:05:58 AM", "N1 N2", "N3-1"),
+            ("2", "U1", "11/11/2019 9:06:58 AM", "N1 N2", "N3-1"),
+            ("3", "U2", "11/11/2019 9:07:58 AM", "N3", "N3-1"),
+        ],
+    )
+    write_mind_behaviors("dev", [("1", "U9", "11/15/2019 7:00:00 PM", "", "N3-0")])
+
+    behaviors = ingest.build_behaviors(MIND)
+    history = ingest.build_history(MIND, behaviors)
+
+    assert len(history) == 3, "three users, not four impressions"
+    view = ingest.per_impression(history, behaviors)
+    assert len(view) == 4
+    assert list(view["n_clicks"])[:3] == [2, 2, 1]

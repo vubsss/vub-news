@@ -69,6 +69,7 @@ def _adapt_each_file(config: DatasetConfig, source: TableSource) -> pd.DataFrame
     parts = []
     for name in source.files:
         frame = source.adapt(_read_one(config, source, name))
+        frame["source"] = _label(name)
         frame["impression_id"] = f"{_label(name)}-" + frame["impression_id"].astype(
             str
         )
@@ -110,55 +111,124 @@ def build_behaviors(config: DatasetConfig) -> pd.DataFrame:
     return _conform(behaviors, BEHAVIOR_COLUMNS)
 
 
-def build_history(config: DatasetConfig, behaviors: pd.DataFrame) -> pd.DataFrame:
-    """One row per impression, carrying that user's click history.
+# What a history row is keyed by, and what an impression is joined to it on.
+HISTORY_KEYS = ["user_id", "source"]
 
-    Where the history lives differs: MIND repeats it on every impression row,
-    EB-NeRD keeps one row per user. An adapter that already knows the
-    impression is qualified per file like behaviors; one that only knows the
-    user is joined onto the impressions instead.
+
+def _one_per_user(frame: pd.DataFrame, config: DatasetConfig) -> pd.DataFrame:
+    """Collapse a per-impression history table to one row per user per file.
+
+    Lossless only if a user's history really is constant within one source
+    file, which is a property of the data rather than of the schema. It holds
+    on MINDsmall -- 94,057 users, not one of them with two different histories
+    -- and this phase exists to move onto data it has not been checked on. So
+    it is checked, on the cheap statistic that catches the realistic failure: a
+    history that *grows* between two impressions of the same user, which is
+    what a per-impression history would be for.
+
+    A same-length substitution would slip through. That is a trade against
+    fingerprinting every list on every ingest, and it is recorded here rather
+    than left for someone to discover.
     """
-    source = config.sources.history
+    lengths = frame["click_history"].map(len)
+    varies = lengths.groupby([frame[k] for k in HISTORY_KEYS]).nunique()
+    if (varies > 1).any():
+        worst = varies.idxmax()
+        raise SchemaError(
+            f"{config.name}: user {worst[0]!r} has {varies.max()} differently "
+            f"sized histories inside {worst[1]!r}, so its history is not a "
+            f"property of the user and cannot be keyed by one. "
+            f"{int((varies > 1).sum()):,} users are affected."
+        )
+    return frame.drop_duplicates(HISTORY_KEYS, keep="first")
 
-    if "impression_id" in source.adapt(_read_one(config, source, source.files[0])):
-        frame = _adapt_each_file(config, source)
-    else:
-        # A user appears in more than one history file, with a different
-        # history in each, so the join has to stay inside one source file or
-        # every impression fans out across all of them.
-        parts = []
-        for name in source.files:
-            label = _label(name)
-            same_file = behaviors["impression_id"].str.startswith(f"{label}-")
-            parts.append(
-                source.adapt(_read_one(config, source, name)).merge(
-                    behaviors.loc[same_file, ["impression_id", "user_id"]],
-                    on="user_id",
-                    how="right",
-                )
-            )
-        frame = pd.concat(parts, ignore_index=True)
 
-    # A user can have impressions but no history row at all — a cold user, not
-    # a missing row, so the history is empty rather than null.
-    frame["click_history"] = frame["click_history"].map(_as_clicks)
-    # The same for the arrays that run parallel to it, and only where the
-    # dataset supplies them. Two different emptinesses meet here: a dataset
-    # with no engagement column at all keeps it null, which `_conform` fills,
-    # while a dataset that has one gives this particular user an empty array —
-    # and only the second may be zipped against the clicks. A null left here
-    # would raise on the first weighting scheme to pair them.
+def history_for(
+    config: DatasetConfig,
+    behaviors: pd.DataFrame,
+    columns: tuple[str, ...] | None = None,
+) -> pd.DataFrame:
+    """The per-impression view of the per-user history table.
+
+    The shape every ranking stage expects -- one row per impression, carrying
+    that user's clicks -- rebuilt from a table that stores it once. The join is
+    cheap in memory as well as on disk: a pandas object column holds pointers,
+    so 477,534 impressions sharing 18,827 lists cost 477,534 pointers and
+    18,827 lists, not 477,534 lists.
+
+    A user with impressions and no history row is a cold start, not a missing
+    row, so the clicks come back empty rather than null. Two emptinesses meet
+    here and only one of them may be zipped against the clicks: a dataset with
+    no engagement column at all keeps it null, while a dataset that has one
+    gives this particular user an empty array.
+    """
+    stored = config.feature_store_dir / "history.parquet"
+    frame = pd.read_parquet(
+        stored,
+        columns=None
+        if columns is None
+        else sorted({*HISTORY_KEYS, *columns} - {"impression_id"}),
+    )
+    return per_impression(frame, behaviors)
+
+
+def per_impression(history: pd.DataFrame, behaviors: pd.DataFrame) -> pd.DataFrame:
+    """The join itself, over a history frame already in hand.
+
+    Separate from `history_for` because the stages have the store on disk and
+    the tests have a frame -- and because the join is the part worth reading
+    on its own.
+    """
+    joined = behaviors[["impression_id", *HISTORY_KEYS]].merge(
+        history, on=HISTORY_KEYS, how="left"
+    )
+
+    if "click_history" in joined:
+        joined["click_history"] = joined["click_history"].map(_as_clicks)
     for parallel, dtype in (
         ("click_times", "datetime64[us]"),
         ("click_read_times", "float32"),
         ("click_scroll", "float32"),
     ):
-        if parallel in frame:
-            frame[parallel] = frame[parallel].map(
+        if parallel in joined:
+            joined[parallel] = joined[parallel].map(
                 lambda values, dtype=dtype: np.empty(0, dtype=dtype)
                 if values is None or np.isscalar(values)
                 else values
             )
+    if "n_clicks" in joined:
+        joined["n_clicks"] = joined["n_clicks"].fillna(0).astype("int64")
+    return joined
+
+
+def build_history(config: DatasetConfig, behaviors: pd.DataFrame) -> pd.DataFrame:
+    """One row per user per source file, carrying that user's click history.
+
+    Where the history lives differs: MIND repeats it on every impression row,
+    EB-NeRD keeps one row per user. Both are reduced to the same thing here --
+    the second shape, which is the one with no redundancy in it. `history_for`
+    turns it back into the per-impression view every ranking stage reads.
+    """
+    source = config.sources.history
+
+    if "impression_id" in source.adapt(_read_one(config, source, source.files[0])):
+        # The history arrives on the impression rows themselves, so there is one
+        # copy of it per impression and they have to be collapsed. Which is
+        # safe only if a user's history really is constant within one file --
+        # asserted below rather than assumed, because it is a property of the
+        # data and this project is about to change which data.
+        frame = _one_per_user(_adapt_each_file(config, source), config)
+    else:
+        # Its own table already, one row per user per file. Nothing to join:
+        # the fan-out onto impressions used to happen here and is what made
+        # this table 25x larger than the information in it.
+        parts = []
+        for name in source.files:
+            part = source.adapt(_read_one(config, source, name))
+            part["source"] = _label(name)
+            parts.append(part)
+        frame = pd.concat(parts, ignore_index=True)
+
     frame["n_clicks"] = frame["click_history"].map(len)
     frame["dataset"] = config.name
     return _conform(frame, HISTORY_COLUMNS)

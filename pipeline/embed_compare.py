@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-from pipeline import embed, evaluate, paths, retrieval
+from pipeline import embed, evaluate, ingest, paths, retrieval
 from pipeline.datasets import DATASETS, DatasetConfig, EmbeddingSpec
 
 # The corrections every variant is tried under. `abtt:10` is dropped from the
@@ -82,11 +82,9 @@ def corpus_matrix(config: DatasetConfig, spec: EmbeddingSpec) -> np.ndarray:
 
 def impressions(config: DatasetConfig, split: str) -> pd.DataFrame:
     behaviors = pd.read_parquet(config.feature_store_dir / "behaviors.parquet")
-    history = pd.read_parquet(
-        config.feature_store_dir / "history.parquet",
-        columns=["impression_id", "click_history"],
-    )
-    return behaviors[behaviors["split"] == split].merge(history, on="impression_id")
+    impressions = behaviors[behaviors["split"] == split]
+    history = ingest.history_for(config, impressions, columns=("click_history",))
+    return impressions.merge(history[["impression_id", "click_history"]], on="impression_id")
 
 
 def per_impression_auc(

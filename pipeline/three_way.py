@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from pipeline import evaluate, paths
+from pipeline import evaluate, ingest, paths
 from pipeline.datasets import DATASETS, DatasetConfig
 
 DOCUMENT = "three-way-{split}.md"
@@ -71,9 +71,8 @@ def paired_gap(config: DatasetConfig, split: str, resamples: int) -> dict:
 
     store = config.feature_store_dir
     behaviors = pd.read_parquet(store / "behaviors.parquet")
-    history = pd.read_parquet(store / "history.parquet")
     impressions = behaviors[behaviors["split"] == split]
-    history = history[history["impression_id"].isin(set(impressions["impression_id"]))]
+    history = ingest.history_for(config, impressions)
 
     of = {
         impression: dict(zip(candidates, marks, strict=True))

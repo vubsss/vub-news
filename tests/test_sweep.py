@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pipeline import bm25_index, compare, evaluate, paths, retrieval, sweep
+from pipeline import bm25_index, compare, evaluate, ingest, paths, retrieval, sweep
 from pipeline.datasets import DATASETS
 
 MIND = DATASETS["mind"]
@@ -233,6 +233,7 @@ def _store_of(store):
         {
             "impression_id": pd.Series([*train, "d1", "d2"], dtype="string"),
             "user_id": pd.Series([*train, "d1", "d2"], dtype="string"),
+            "source": pd.Series(["train"] * (len(train) + 2), dtype="string"),
             "impression_time": pd.to_datetime(
                 [f"2019-11-10 0{i}:00:00" for i in range(len(train))]
                 + ["2019-11-11 09:00:00", "2019-11-11 10:00:00"]
@@ -248,9 +249,12 @@ def _store_of(store):
 
     clicks = {"d1": ["a2"] * 6 + ["a1"] * 5, "d2": ["a1"] * 6 + ["a2"] * 5}
     clicks.update({name: ["a1", "a2", "a3"] for name in train})
+    # Keyed by (user_id, source), which is one row per impression here only
+    # because this fixture gives every impression its own user.
     pd.DataFrame(
         {
-            "impression_id": pd.Series(list(clicks), dtype="string"),
+            "user_id": pd.Series(list(clicks), dtype="string"),
+            "source": pd.Series(["train"] * len(clicks), dtype="string"),
             "click_history": [clicks[i] for i in clicks],
             "n_clicks": [len(clicks[i]) for i in clicks],
         }
@@ -279,7 +283,7 @@ def test_the_history_window_reaches_both_retrievers(store):
     retriever independently, since they read the window through different
     code."""
     behaviors = pd.read_parquet(store / "behaviors.parquet")
-    history = pd.read_parquet(store / "history.parquet")
+    history = ingest.history_for(MIND, behaviors)
 
     for retriever in (evaluate.RETRIEVERS["bm25"], evaluate.RETRIEVERS["ann"]):
         near = retriever.rank_candidates(MIND, behaviors, history, 5)

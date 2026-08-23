@@ -39,7 +39,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-from pipeline import ann_index, bm25_index, hybrid, paths, retrieval
+from pipeline import ann_index, bm25_index, hybrid, ingest, paths, retrieval
 from pipeline.datasets import DATASETS, DatasetConfig
 
 # The retrievers the harness can score. The values are modules, each exposing
@@ -602,8 +602,8 @@ def evaluate(
     store = config.feature_store_dir
     articles = pd.read_parquet(store / "articles.parquet")
     behaviors = pd.read_parquet(store / "behaviors.parquet")
-    history = pd.read_parquet(store / "history.parquet")
     impressions = behaviors[behaviors["split"] == split]
+    history = ingest.history_for(config, impressions)
 
     ranked = RETRIEVERS[retriever].rank_candidates(
         config, impressions, history, history_k

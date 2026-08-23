@@ -37,6 +37,7 @@ from pipeline import (
     embed_compare,
     evaluate,
     hybrid,
+    ingest,
     paths,
     retrieval,
 )
@@ -67,9 +68,8 @@ def parents(
     """Both parents' rankings for the split, computed once."""
     store = config.feature_store_dir
     behaviors = pd.read_parquet(store / "behaviors.parquet")
-    history = pd.read_parquet(store / "history.parquet")
     impressions = behaviors[behaviors["split"] == split]
-    history = history[history["impression_id"].isin(set(impressions["impression_id"]))]
+    history = ingest.history_for(config, impressions)
     print(f"  {len(impressions):,} {split} impressions", flush=True)
 
     ranked = {}

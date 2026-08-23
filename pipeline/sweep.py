@@ -41,7 +41,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from pipeline import compare, evaluate, paths, retrieval
+from pipeline import compare, evaluate, ingest, paths, retrieval
 from pipeline.datasets import DATASETS, DatasetConfig
 
 # The history windows the spec sweeps. Both retrievers get the same one in a
@@ -114,8 +114,8 @@ def run_cell(
 
     store = config.feature_store_dir
     behaviors = pd.read_parquet(store / "behaviors.parquet")
-    history = pd.read_parquet(store / "history.parquet")
     impressions = behaviors[behaviors["split"] == split]
+    history = ingest.history_for(config, impressions)
 
     ranked, _ = evaluate.RETRIEVERS[retriever].retrieve_corpus(
         config, impressions, history, history_k, max(retrieval.DEPTHS)

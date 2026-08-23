@@ -32,6 +32,13 @@ ARTICLE_COLUMNS = (
 )
 BEHAVIOR_COLUMNS = (
     "impression_id",
+    # Which of the dataset's source files this impression came from -- `train`,
+    # `dev`, `validation`. Already inside `impression_id`, which is qualified
+    # with it because ids are only unique within a file, and materialised here
+    # because the history table is keyed by it: parsing it back out of 18M ids
+    # costs 5.3 s every time the table is read, and this column costs nothing,
+    # being one of two values and dictionary-encoded by parquet.
+    "source",
     "user_id",
     "impression_time",
     "candidate_ids",
@@ -48,7 +55,22 @@ BEHAVIOR_COLUMNS = (
 # no stage has to ask which dataset it is holding.
 HISTORY_COLUMNS = (
     "user_id",
-    "impression_id",
+    # Keyed by the user and the file the history was read from -- **not** by
+    # impression. One row per user per snapshot, joined onto impressions at
+    # read time by `ingest.history_for`.
+    #
+    # Per-impression was 25x redundant on EB-NeRD: 477,534 rows for 18,827
+    # users, each user's 292-click list written once per impression they appear
+    # in, 454 MB. It is the first table that breaks at 10x scale and the
+    # measurement that says so is in phase 8.
+    #
+    # `source` rather than `user_id` alone, because a user genuinely has more
+    # than one history: EB-NeRD ships a train and a validation snapshot and
+    # 11,657 of its 18,827 users appear in both with different click lists.
+    # Collapsing those would apply the later snapshot to the earlier period's
+    # impressions, which is future clicks leaking into past ones. `split` is
+    # not fine enough either -- 2,617 (user, split) pairs span both snapshots.
+    "source",
     "click_history",
     "click_times",
     "click_read_times",
@@ -71,6 +93,7 @@ COLUMN_DTYPES = {
     "lexical_text": "string",
     "dataset": "string",
     "impression_id": "string",
+    "source": "string",
     "user_id": "string",
     "impression_time": "datetime64[us]",
     "candidate_ids": "object",
@@ -473,6 +496,9 @@ MIND = DatasetConfig(
         },
         behaviors={
             "impression_id": "impression_id",
+            # Qualified onto the id and kept as its own column; see
+            # BEHAVIOR_COLUMNS.
+            "source": DERIVED,
             "user_id": "user_id",
             "impression_time": "time",
             # Both parsed out of the space-delimited "impressions" field.
@@ -483,7 +509,7 @@ MIND = DatasetConfig(
         },
         history={
             "user_id": "user_id",
-            "impression_id": "impression_id",
+            "source": DERIVED,
             "click_history": "history",
             # MIND's history is a bare id list: no timestamp on a past click
             # and no engagement with it. Null columns rather than absent ones,
@@ -770,6 +796,7 @@ EBNERD = DatasetConfig(
         },
         behaviors={
             "impression_id": "impression_id",
+            "source": DERIVED,
             "user_id": "user_id",
             "impression_time": "impression_time",
             "candidate_ids": "article_ids_inview",
@@ -780,8 +807,9 @@ EBNERD = DatasetConfig(
         },
         history={
             "user_id": "user_id",
-            # History is a separate table here; joined onto behaviors.
-            "impression_id": DERIVED,
+            # Its own table here, one row per user per file — which is now the
+            # shape the feature store keeps for both datasets.
+            "source": DERIVED,
             "click_history": "article_id_fixed",
             # Parallel arrays over the same clicks, all three describing a
             # click that already happened and so all three available at

@@ -6,6 +6,7 @@
 #     ada/sync.sh artifacts  laptop  ->  ada:/home     computed artifacts
 #     ada/sync.sh park                   ada:/home -> ada:/share1   (on Ada)
 #     ada/sync.sh pull       ada:/home  ->  laptop     artifacts and results
+#     ada/sync.sh submissions ada:/home ->  laptop     the CodaBench zips
 #
 # Three filesystems, and only two of them can see each other at a time:
 #
@@ -73,6 +74,14 @@ case "${1:-}" in
 
   pull)
     rsync -az --info=stats1 "$HOST:$REMOTE-run/artifacts/" "$REPO/artifacts/"
+    ;;
+
+  submissions)
+    # The zips, which `pull` deliberately does not carry: artifacts are pulled
+    # often and these are ~1 GB of files that change once. Uploaded by hand to
+    # CodaBench afterwards, so they have to reach this machine.
+    rsync -az --info=stats1 --include '*/' --include '*.zip' --exclude '*' \
+      "$HOST:$REMOTE-run/predictions/" "$REPO/predictions/"
     ;;
 
   *)

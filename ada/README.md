@@ -86,3 +86,14 @@ runs on, so it physically cannot be. It runs on the login node or not at all.
 **`env.sbatch` is not idempotent by accident.** It skips miniforge and the env
 if they already exist, so re-running it only re-installs the pinned
 requirements. Deleting `$HOME/envs/vub-news` is how you force a clean rebuild.
+
+**The stage-out is a `trap`, and it does not mirror on failure.** `build.sbatch`
+is `set -e`, so a build that raises used to abandon the rest of the script and
+strand the feature store on node-local `/scratch` — which is how job 2674571
+lost eight stages' worth of it to a seven-day purge window. It runs on the way
+out now, whatever the exit status. What it drops on the failure path is
+`--delete`: a crash part-way through `ingest` leaves a partial store on
+`/scratch` while `/home` still holds the whole one, and mirroring the first
+onto the second would faithfully destroy it. Stale files are recoverable, and
+the next clean run deletes them; deleted ones are not. `SIGKILL` is still
+`SIGKILL`, so a job that overruns its walltime loses `/scratch` regardless.

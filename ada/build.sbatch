@@ -70,6 +70,50 @@ if [ -d "$HOME/vub-news-data/feature_store" ]; then
 fi
 df -h "$STAGE" | tail -1
 
+# --- stage out --------------------------------------------------------------
+# The feature store comes back because rebuilding it costs more than storing
+# it, and /scratch is purged weekly. artifacts/ and .checkpoints/ were written
+# straight to $RESULTS and are already here.
+#
+# In a trap, because staging out is placement rather than computation and this
+# script is `set -e`: job 2674571 failed in the ninth of nine stages, the shell
+# abandoned the rest of the file, and eight stages' worth of feature store sat
+# on node-local /scratch until it was rescued by hand four days into a
+# seven-day purge window. A run that fails late has still earned what the
+# stages before it produced.
+#
+# `--delete` only on the way out clean. A crash mid-`ingest` leaves a partial
+# store on /scratch while /home still holds the whole one from last time, and
+# mirroring the first onto the second would faithfully destroy it. Adding and
+# overwriting without deleting can leave a stale file behind; the next
+# successful run deletes it, and stale is recoverable where deleted is not.
+#
+# EXIT covers the failure path; TERM turns SLURM's warning shot at the walltime
+# into an exit, which fires EXIT once. Nothing survives SIGKILL, so a job that
+# overruns its walltime still loses /scratch.
+stage_out() {
+    local status=$?
+    [ -d "$STAGE/feature_store" ] || return 0
+
+    echo "staging out ..."
+    mkdir -p "$HOME/vub-news-data"
+    if [ "$status" -eq 0 ]; then
+        rsync -a --delete "$STAGE/feature_store" "$HOME/vub-news-data/"
+    else
+        echo "  build exited $status — staging out without --delete"
+        rsync -a "$STAGE/feature_store" "$HOME/vub-news-data/"
+    fi
+
+    # Printed here so they are printed on both paths. The wall clock the scale
+    # analysis cites was reconstructed from `sacct` last time, because the run
+    # that produced it never reached these lines.
+    echo "finished    $(date -Is)"
+    echo "results in  $RESULTS  (pull to /share1 with: ada/sync.sh pull)"
+    du -sh "$RESULTS" "$HOME/vub-news-data" 2>/dev/null || true
+}
+trap stage_out EXIT
+trap 'exit 143' TERM
+
 # --- run --------------------------------------------------------------------
 # The unmodified command. Everything above and below is placement.
 export VUB_NEWS_DATA_ROOT="$STAGE"
@@ -78,15 +122,3 @@ cd "$REPO"
 
 echo "--- build.py $* ---"
 /usr/bin/time -v "$ENV_PY" build.py "$@" 2> >(tee "$RESULTS/last-build.time" >&2)
-
-# --- stage out --------------------------------------------------------------
-# The feature store comes back because rebuilding it costs more than storing
-# it, and /scratch is purged weekly. artifacts/ and .checkpoints/ were written
-# straight to $RESULTS and are already here.
-echo "staging out ..."
-mkdir -p "$HOME/vub-news-data"
-rsync -a --delete "$STAGE/feature_store" "$HOME/vub-news-data/"
-
-echo "finished    $(date -Is)"
-echo "results in  $RESULTS  (pull to /share1 with: ada/sync.sh pull)"
-du -sh "$RESULTS" "$HOME/vub-news-data" 2>/dev/null || true

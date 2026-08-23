@@ -503,3 +503,67 @@ def test_an_ordinary_id_is_still_refused_twice(ebnerd_competition):
 
     with pytest.raises(predict.SubmissionError, match="appears twice"):
         predict.submit(EBNERD, retriever="bm25")
+
+
+def test_a_cached_matrix_is_not_reused_after_the_encoder_changes(
+    competition, monkeypatch
+):
+    """The corpus cache is keyed on the corpus, and the corpus is the thing a
+    promotion does *not* change. MIND moved from all-MiniLM-L6-v2 to e5-base-v2
+    without the competition's catalogue gaining a single article, so a cache
+    keyed on ids alone survives the change and hands the submission the old
+    model's vectors -- unit length, well formed, and not the model any reported
+    number was measured on. Nothing in the output could show it."""
+    width = MIND.embeddings.dim
+    monkeypatch.setattr(
+        embed, "read_source", lambda config: (np.array([], dtype=object),
+                                              np.zeros((0, width), dtype="float32"))
+    )
+    monkeypatch.setattr(
+        embed, "encode",
+        lambda texts, config, **kwargs: np.tile(
+            np.eye(1, width, dtype="float32"), (len(texts), 1)
+        ),
+    )
+    articles = predict.catalogue(MIND)
+    directory = competition / "work"
+
+    embed.for_corpus(articles, MIND, directory)
+    _, again = embed.for_corpus(articles, MIND, directory)
+    assert again["cached"] == 1, "the premise: an unchanged encoder does reuse it"
+
+    # The same corpus, a different encoder. Same width, so a shape check would
+    # not catch it either -- e5's two prefix readings are both 768.
+    moved = dataclasses.replace(
+        MIND, embeddings=dataclasses.replace(MIND.embeddings, prefix="passage: ")
+    )
+    _, after = embed.for_corpus(articles, moved, directory)
+
+    assert after["cached"] == 0, "a different prefix is a different model"
+
+
+def test_a_matrix_cached_before_the_source_was_recorded_is_not_trusted(
+    competition, monkeypatch
+):
+    """Caches written by an earlier version have no source.json beside them,
+    and nothing can say which encoder produced them. Re-encoded rather than
+    assumed to match."""
+    width = MIND.embeddings.dim
+    monkeypatch.setattr(
+        embed, "read_source", lambda config: (np.array([], dtype=object),
+                                              np.zeros((0, width), dtype="float32"))
+    )
+    monkeypatch.setattr(
+        embed, "encode",
+        lambda texts, config, **kwargs: np.tile(
+            np.eye(1, width, dtype="float32"), (len(texts), 1)
+        ),
+    )
+    articles = predict.catalogue(MIND)
+    directory = competition / "work"
+    embed.for_corpus(articles, MIND, directory)
+    (directory / embed.SOURCE).unlink()
+
+    _, after = embed.for_corpus(articles, MIND, directory)
+
+    assert after["cached"] == 0

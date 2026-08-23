@@ -8,6 +8,7 @@ the spec and never the dataset name.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from functools import cached_property
@@ -34,6 +35,9 @@ ID_INDEX = "article_id_index.parquet"
 # apart from the registry's `artifact` so saving it can never overwrite the
 # downloaded source it was built from.
 VECTORS = "vectors.npy"
+# What produced a cached corpus matrix. Beside it rather than in its name, so
+# a stale cache is *replaced* rather than accumulating one directory per model.
+SOURCE = "source.json"
 
 # What this stage derives lives in a subdirectory of the dataset's artifacts,
 # as ticket 6's index does. The downloaded source stays at the root, so saving
@@ -573,12 +577,12 @@ def for_corpus(
     result is cached under `directory` and reused whenever the corpus it was
     built for is the same one, article for article and in the same order.
     """
+    spec = config.embeddings
     corpus_ids = articles["article_id"].astype("string").to_numpy(dtype=object)
-    cached = _cached(directory, corpus_ids)
+    cached = _cached(directory, corpus_ids, spec)
     if cached is not None:
         return cached, {"articles": len(corpus_ids), "cached": 1, "encoded": 0}
 
-    spec = config.embeddings
     source_ids, source_vectors = read_source(config)
     matrix, missing = align(source_ids, source_vectors, articles["article_id"], spec.dim)
     if spec.normalise:
@@ -594,6 +598,9 @@ def for_corpus(
     check_unit_norm(matrix, config)
     embeddings = Embeddings(vectors=matrix, article_ids=corpus_ids)
     embeddings.save(directory)
+    (directory / SOURCE).write_text(
+        json.dumps(source_identity(spec), indent=2), encoding="utf-8"
+    )
     return embeddings, {
         "articles": len(corpus_ids),
         "cached": 0,
@@ -605,14 +612,50 @@ def for_corpus(
     }
 
 
-def _cached(directory: Path, corpus_ids: np.ndarray) -> Embeddings | None:
-    """A previous run's matrix, if it was built for exactly this corpus.
+def source_identity(spec: EmbeddingSpec) -> dict[str, object]:
+    """Everything about a spec that changes the vectors it produces.
 
-    Same ids in the same order or nothing: a matrix is positional, so one
-    built for a catalogue that has since gained an article would pair every
-    row after that article with the wrong one and still load without complaint.
+    Not `postprocess`: the correction is applied downstream of this cache, on
+    the way into the index, so a matrix cached under one correction is the
+    right matrix under another.
+    """
+    return {
+        "model": spec.model,
+        "dim": spec.dim,
+        "artifact": spec.artifact,
+        "prefix": spec.prefix,
+        "pooling": spec.pooling,
+        "encoder": spec.encoder,
+        "normalise": spec.normalise,
+        "max_tokens": spec.max_tokens,
+    }
+
+
+def _cached(
+    directory: Path, corpus_ids: np.ndarray, spec: EmbeddingSpec
+) -> Embeddings | None:
+    """A previous run's matrix, if it was built for this corpus *and* this model.
+
+    Same ids in the same order or nothing: a matrix is positional, so one built
+    for a catalogue that has since gained an article would pair every row after
+    that article with the wrong one and still load without complaint.
+
+    And the same source, which the ids cannot tell you. Promoting a new encoder
+    does not change the competition's catalogue by one article, so a cache keyed
+    on ids alone survives the promotion and hands the submission the *old*
+    model's vectors -- unit length, well formed, the right shape when the widths
+    happen to agree, and not the model any reported number was measured on.
+    That is the one failure a submission path must not have, and it is invisible
+    in the output. A matrix with no `source.json` beside it predates this check
+    and is not reused.
     """
     if not (directory / VECTORS).exists() or not (directory / ID_INDEX).exists():
+        return None
+
+    identity = directory / SOURCE
+    if not identity.exists():
+        return None
+    if json.loads(identity.read_text(encoding="utf-8")) != source_identity(spec):
         return None
 
     stored = pd.read_parquet(directory / ID_INDEX)["article_id"]

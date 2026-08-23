@@ -278,6 +278,38 @@ class EmbeddingSpec:
     # no correction. Which method to apply is chosen on the tune split -- the
     # statistics themselves are fitted on the corpus, which is not a split.
     postprocess: str = "none"
+    # How a sequence's token vectors become one vector. A property of the
+    # checkpoint, not a choice: sentence-transformers publishes it in the
+    # model's own `1_Pooling/config.json`, and reading it the other way is
+    # silent -- the vectors come out well-formed, unit length, and not the
+    # model's. all-MiniLM-L6-v2, all-mpnet-base-v2 and e5 pool the mean;
+    # bge-base-en-v1.5 takes the CLS token.
+    pooling: str = "mean"
+    # Prepended to every document before it is tokenised, for the checkpoints
+    # that were trained with an instruction. e5 requires one on *every* input
+    # and degrades quietly without it; the sentence-transformers models and
+    # bge-*-v1.5 want none on the document side.
+    #
+    # There is only a document side here. This pipeline never encodes a query:
+    # a user profile is the mean of the vectors of articles they clicked, so
+    # both sides of every dot product are article embeddings. e5's asymmetric
+    # `query: `/`passage: ` split has nothing to attach to, and bge's query
+    # instruction has nowhere to go.
+    prefix: str = ""
+    # What a comparison table calls this variant. Defaults to the checkpoint's
+    # name, which is the right label until two variants share a checkpoint --
+    # e5 under its two prefix conventions is one model and two vector sources,
+    # and a grid that labelled both `intfloat/e5-base-v2` would report two
+    # different measurements under one name.
+    label: str = ""
+    # What produces the vectors. "transformer" runs `embed.encode`; "word2vec"
+    # averages pre-trained word vectors and reads none of the fields above
+    # about pooling, prefixes or truncation.
+    encoder: str = "transformer"
+
+    @property
+    def name(self) -> str:
+        return self.label or self.model
 
 
 @dataclass(frozen=True)
@@ -500,6 +532,87 @@ MIND = DatasetConfig(
         # marginal effect that fails to replicate is the ordinary outcome that
         # holding out a reporting split is designed to expose.
         postprocess="centre",
+    ),
+    # The alternatives phase 7 encodes and compares. MIND ships no vectors at
+    # all, so unlike EB-NeRD's four shipped artifacts every one of these has to
+    # be produced -- `ada/encode.sbatch` runs them through one path, and the
+    # comparison reads them back as ordinary sources.
+    #
+    # `max_tokens` is each checkpoint's own `max_seq_length`, read from the
+    # model rather than chosen: encoding at a different width produces vectors
+    # that are not the model's.
+    embedding_variants=(
+        EmbeddingSpec(
+            kind="generate",
+            model="sentence-transformers/all-mpnet-base-v2",
+            dim=768,
+            artifact="embeddings-mpnet.npy",
+            gdrive_file_id=None,
+            normalise=False,
+            max_tokens=384,
+            label="all-mpnet-base-v2",
+        ),
+        EmbeddingSpec(
+            kind="generate",
+            model="BAAI/bge-base-en-v1.5",
+            dim=768,
+            artifact="embeddings-bge.npy",
+            gdrive_file_id=None,
+            normalise=False,
+            max_tokens=512,
+            # Its own 1_Pooling/config.json says cls, and nothing errors if we
+            # read it as mean -- the vectors come out unit length and wrong.
+            pooling="cls",
+            # v1.5 was released specifically to work without the instruction,
+            # and the instruction is a *query* one besides. Nothing here
+            # encodes a query.
+            label="bge-base-en-v1.5",
+        ),
+        # e5 twice, because its prefix convention does not map onto this
+        # pipeline and the honest way to pick between the two readings is to
+        # measure them. Its card requires a prefix on every input and says to
+        # use `query: `/`passage: ` "for asymmetric tasks such as passage
+        # retrieval"; scoring an article against the mean of a user's clicked
+        # articles is not that -- both sides are documents from one catalogue.
+        # So one entry reads them as passages, and the other takes the card's
+        # own advice for non-asymmetric tasks, which is `query: ` throughout.
+        EmbeddingSpec(
+            kind="generate",
+            model="intfloat/e5-base-v2",
+            dim=768,
+            artifact="embeddings-e5-passage.npy",
+            gdrive_file_id=None,
+            normalise=False,
+            max_tokens=512,
+            prefix="passage: ",
+            label="e5-base-v2 (passage:)",
+        ),
+        EmbeddingSpec(
+            kind="generate",
+            model="intfloat/e5-base-v2",
+            dim=768,
+            artifact="embeddings-e5-query.npy",
+            gdrive_file_id=None,
+            normalise=False,
+            max_tokens=512,
+            prefix="query: ",
+            label="e5-base-v2 (query:)",
+        ),
+        # The floor, and the assignment names it directly. EB-NeRD's own
+        # word2vec artifact beat three transformers at 768 dimensions, which
+        # makes this the one variant here whose result is genuinely in doubt.
+        EmbeddingSpec(
+            kind="generate",
+            model="fse/word2vec-google-news-300",
+            dim=300,
+            artifact="embeddings-word2vec.npy",
+            gdrive_file_id=None,
+            # A mean of word vectors is not unit length; the pipeline scales it.
+            normalise=True,
+            max_tokens=None,
+            encoder="word2vec",
+            label="word2vec-google-news-300",
+        ),
     ),
     submission=SubmissionSpec(
         competition_url="https://www.codabench.org/competitions/13967/",

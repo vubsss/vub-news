@@ -196,7 +196,7 @@ def run(config: DatasetConfig, split: str, resamples: int) -> list[dict]:
             row = {
                 "dataset": config.name,
                 "split": split,
-                "variant": spec.model,
+                "variant": spec.name,
                 "dim": corrected.shape[1],
                 "method": method,
                 "anisotropy": embed.anisotropy(corrected),
@@ -206,7 +206,7 @@ def run(config: DatasetConfig, split: str, resamples: int) -> list[dict]:
             }
             rows.append(row)
             print(
-                f"    {spec.model:38} {method:8} auc {row['auc']:.4f} "
+                f"    {spec.name:38} {method:8} auc {row['auc']:.4f} "
                 f"[{low:.4f}, {high:.4f}]  anisotropy {row['anisotropy']:+.4f}",
                 flush=True,
             )

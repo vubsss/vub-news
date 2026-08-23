@@ -8,6 +8,7 @@ the spec and never the dataset name.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -15,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from pipeline.datasets import DatasetConfig
+from pipeline.datasets import DatasetConfig, EmbeddingSpec
 
 # float32 normalisation lands a few ulps off exactly 1.0; anything further out
 # than this is a real deviation rather than rounding.
@@ -73,6 +74,18 @@ def document_text(articles: pd.DataFrame) -> pd.Series:
     return title.where(abstract == "", title + ". " + abstract)
 
 
+def cls_pool(hidden: "torch.Tensor", attention_mask: "torch.Tensor") -> "torch.Tensor":
+    """The first token's vector, which is what BERT's [CLS] position holds.
+
+    `bge-*-v1.5` is trained to put the sentence representation here, and mean
+    pooling it instead returns a perfectly well-formed vector that is not the
+    model's. The mask is unused -- position 0 is never padding -- and taken
+    only so the two poolers are interchangeable by name.
+    """
+    del attention_mask
+    return hidden[:, 0]
+
+
 def mean_pool(hidden: "torch.Tensor", attention_mask: "torch.Tensor") -> "torch.Tensor":
     """Average a sequence's token vectors, counting only the real tokens.
 
@@ -86,29 +99,94 @@ def mean_pool(hidden: "torch.Tensor", attention_mask: "torch.Tensor") -> "torch.
     return (hidden * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
 
 
+# Words as word2vec sees them: it is case-sensitive and has vectors for
+# stopwords, so `preprocess.cleaner` is the wrong tokeniser here -- it lowers
+# case and strips exactly the words the model has entries for. Apostrophes stay
+# inside a token because GoogleNews holds "don't" and not "don" plus "t".
+WORD = re.compile(r"[A-Za-z][A-Za-z'-]*")
+
+
+def encode_word2vec(texts: list[str], model_dir: Path, dim: int) -> np.ndarray:
+    """Document vectors as the mean of their words' pre-trained vectors.
+
+    The floor the assignment asks for, and on EB-NeRD the *winner*: its shipped
+    word2vec artifact at 300 dimensions beat three transformers at 768. Which
+    is why this is here as a real comparison rather than a formality.
+
+    A word the model does not know contributes nothing rather than a zero
+    vector -- the same argument `build_user_vectors` makes about clicks the
+    catalogue has no row for. A document with no known word at all comes back
+    as a zero row, which `normalise` leaves at zero and the retriever reads as
+    a user it knows nothing about.
+
+    Case is tried before lowercase, because GoogleNews distinguishes them and
+    "Apple" is not "apple" in it.
+    """
+    from gensim.models import KeyedVectors
+
+    vectors = KeyedVectors.load(str(model_dir), mmap="r")
+    matrix = np.zeros((len(texts), dim), dtype="float32")
+    for row, text in enumerate(texts):
+        found = [
+            vectors[word] if word in vectors else vectors[word.lower()]
+            for word in WORD.findall(text)
+            if word in vectors or word.lower() in vectors
+        ]
+        if found:
+            matrix[row] = np.mean(found, axis=0)
+    return matrix
+
+
+POOLERS = {"mean": mean_pool, "cls": cls_pool}
+
+
 def encode(texts: list[str], config: DatasetConfig, device: str = "cpu",
-           batch_size: int = 256) -> np.ndarray:
+           batch_size: int = 256, spec: EmbeddingSpec | None = None) -> np.ndarray:
     """Encode documents into unit-length vectors, for a dataset that generates.
 
-    This is the whole of what the `sentence-transformers` wrapper does for
-    all-MiniLM-L6-v2 -- a 6-layer BERT, mean pooling, L2 normalisation -- run
-    against `transformers` directly. Verified equal to that wrapper's output on
-    256 real MIND articles to 9.3e-08, which is float32 rounding. Doing it means
-    the notebook that runs on a hosted GPU installs nothing: Colab already
+    This is the whole of what the `sentence-transformers` wrapper does for a
+    checkpoint of this shape -- tokenise, run the encoder, pool, L2 normalise --
+    run against `transformers` directly. Verified equal to that wrapper's output
+    on 256 real MIND articles to 9.3e-08, which is float32 rounding. Doing it
+    means the notebook that runs on a hosted GPU installs nothing: Colab already
     ships torch and transformers, and pip re-pinning numpy underneath a live
     kernel is what broke that notebook twice.
 
+    Two things vary by checkpoint and neither errors when it is wrong, which is
+    why both are registry fields read here rather than constants: the **pooling**
+    (`bge-*` reads CLS where the sentence-transformers models read the mean) and
+    the **prefix** (e5 requires one on every input). Get either wrong and the
+    vectors are well-formed, unit length, and not the model's -- the experiment
+    then reports a good encoder as a bad one.
+
+    `spec` overrides the registry's active entry, which is how phase 7 encodes
+    the variants: the same path, one model at a time, with no stage branching on
+    which checkpoint it holds.
+
     Imported lazily, like the gdown fetch below, because the pipeline itself
-    never encodes -- a dataset that generates its vectors downloads them, and
-    only the notebook takes this path.
+    rarely encodes -- a dataset that generates its vectors downloads them, and
+    only the notebook and the encode job take this path.
     """
     import torch
     from tqdm import tqdm
     from transformers import AutoModel, AutoTokenizer
 
-    spec = config.embeddings
+    spec = spec or config.embeddings
+    if spec.pooling not in POOLERS:
+        raise EmbeddingError(
+            f"unknown pooling {spec.pooling!r}, expected one of "
+            f"{', '.join(POOLERS)}"
+        )
+    pool = POOLERS[spec.pooling]
+
     tokenizer = AutoTokenizer.from_pretrained(spec.model)
     model = AutoModel.from_pretrained(spec.model).to(device).eval()
+
+    # Prefixed before truncation, so a long article loses its tail rather than
+    # its instruction -- the other order would drop the prefix from exactly the
+    # documents that fill the window.
+    if spec.prefix:
+        texts = [spec.prefix + text for text in texts]
 
     rows = []
     with torch.no_grad():
@@ -120,7 +198,7 @@ def encode(texts: list[str], config: DatasetConfig, device: str = "cpu",
                 max_length=spec.max_tokens,
                 return_tensors="pt",
             ).to(device)
-            pooled = mean_pool(
+            pooled = pool(
                 model(**batch).last_hidden_state, batch["attention_mask"]
             )
             rows.append(torch.nn.functional.normalize(pooled, p=2, dim=1).cpu())

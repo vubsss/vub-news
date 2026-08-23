@@ -41,9 +41,12 @@ case "${1:-}" in
     # The downloaded archives, not the extracted tree: acquire re-extracts them
     # on the far side, and sending 8.2 GB where 3.4 GB will do wastes the link
     # and the /home quota alike.
+    # Every dataset's archives, rather than a list to keep in step with the
+    # registry -- phase 8 added two entries and this is where that would have
+    # been noticed late. rsync skips what is already there, so the large
+    # bundles cost their 3.19 GB once.
     rsync -az --info=stats1 --relative \
-      "$REPO/./data/raw/mind/_archives" "$REPO/./data/raw/ebnerd/_archives" \
-      "$HOST:$REMOTE-data/"
+      "$REPO"/./data/raw/*/_archives "$HOST:$REMOTE-data/"
     ;;
 
   artifacts)

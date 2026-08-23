@@ -519,12 +519,17 @@ def ensure_artifact(config: DatasetConfig) -> None:
         raise EmbeddingError(
             f"{config.name}: no embeddings on disk and no artifact to fetch.\n"
             f"  {config.name} ships no vectors, so they are generated once on a "
-            f"hosted GPU rather than rebuilt on every machine:\n"
-            f"    1. run {NOTEBOOK} on Colab with a T4 runtime\n"
-            f"    2. upload its {spec.artifact} and {ID_INDEX} to Drive, shared "
-            f"so that anyone with the link can read them\n"
-            f"    3. put the folder's id in gdrive_file_id on {config.name}'s "
-            f"EmbeddingSpec in pipeline/datasets.py\n"
+            f"GPU rather than rebuilt on every machine. Produce "
+            f"{spec.artifact} with:\n"
+            f"    sbatch ada/encode.sbatch --variant '{spec.name}'\n"
+            f"  or, off the cluster:\n"
+            f"    python -m pipeline.encode_variants --dataset {config.name} "
+            f"--variant '{spec.name}' --device cuda\n"
+            f"  Either writes it beside {ID_INDEX}, which fixes the row order.\n"
+            f"  To fetch a pre-built one instead, put its Drive folder id in "
+            f"gdrive_file_id on {config.name}'s EmbeddingSpec in "
+            f"pipeline/datasets.py -- {NOTEBOOK} is the older route and "
+            f"produces the all-MiniLM-L6-v2 artifact, not this one.\n"
             f"  then re-run this stage."
         )
 

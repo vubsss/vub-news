@@ -82,3 +82,24 @@ def test_the_interval_comes_from_the_harness_seed():
     values = np.random.default_rng(1).random(500)
 
     assert embed_compare.interval(values, 200) == embed_compare.interval(values, 200)
+
+
+def test_a_promoted_variant_is_scored_once_not_twice():
+    """Phase 7 promoted e5 into MIND's active slot and left it in the variant
+    list, which is right -- the grid it won is part of its record. But
+    `variants()` reads the active spec *and* the list, so without deduplication
+    the table would carry two identical rows under one name and a reader would
+    reasonably wonder which was the real one."""
+    from pipeline.datasets import DATASETS
+
+    for config in DATASETS.values():
+        names = [spec.name for spec in embed_compare.variants(config)]
+        assert len(names) == len(set(names)), f"{config.name} scores a source twice"
+
+    mind = DATASETS["mind"]
+    assert mind.embeddings.name in [s.name for s in mind.embedding_variants], (
+        "the premise: the active source is still listed as a variant"
+    )
+    assert embed_compare.variants(mind)[0].name == mind.embeddings.name, (
+        "and the active one still comes first"
+    )

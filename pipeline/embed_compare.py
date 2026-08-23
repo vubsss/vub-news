@@ -44,8 +44,21 @@ DOCUMENT = "embeddings-{dataset}-{split}.md"
 
 
 def variants(config: DatasetConfig) -> tuple[EmbeddingSpec, ...]:
-    """Every vector source for this dataset, the active one first."""
-    return (config.embeddings, *config.embedding_variants)
+    """Every vector source for this dataset, the active one first, once each.
+
+    Deduplicated by artifact, because promoting a variant into the active slot
+    leaves it in both lists -- which is the right thing for the registry, since
+    the grid it won is part of its record. Scored twice it would put two
+    identical rows in the table under one name, and a reader would reasonably
+    wonder which of them was the real one.
+    """
+    seen: set[str] = set()
+    found: list[EmbeddingSpec] = []
+    for spec in (config.embeddings, *config.embedding_variants):
+        if spec.artifact not in seen:
+            seen.add(spec.artifact)
+            found.append(spec)
+    return tuple(found)
 
 
 def corpus_matrix(config: DatasetConfig, spec: EmbeddingSpec) -> np.ndarray:

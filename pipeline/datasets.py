@@ -498,39 +498,43 @@ MIND = DatasetConfig(
     ),
     embeddings=EmbeddingSpec(
         kind="generate",
-        model="sentence-transformers/all-MiniLM-L6-v2",
-        dim=384,
-        artifact="embeddings.npy",
-        gdrive_file_id="1tVfeai5eUVvrhRGZdowZQntAwHt2VkQR",
-        # embed.encode normalises as it goes, so the uploaded artifact is
-        # already unit length. Verified on load rather than redone.
+        model="intfloat/e5-base-v2",
+        dim=768,
+        artifact="embeddings-e5-query.npy",
+        # Produced by `ada/encode.sbatch` and not fetched from anywhere. The
+        # committed script is `pipeline/encode_variants.py`.
+        gdrive_file_id=None,
+        # embed.encode normalises as it goes, so the artifact is already unit
+        # length. Verified on load rather than redone.
         normalise=False,
-        max_tokens=256,
-        # Chosen on tune over the same seven settings EB-NeRD was, 30,894
-        # scorable impressions:
+        # e5's own max_seq_length. Read off the checkpoint, not chosen.
+        max_tokens=512,
+        # e5 requires a prefix on **every** input and degrades quietly without
+        # one. Which prefix was not obvious and was therefore measured: its
+        # card says to use `query: `/`passage: ` "for asymmetric tasks such as
+        # passage retrieval", and this is not that -- a user profile is the
+        # mean of the vectors of articles they clicked, so both sides of every
+        # dot product are documents out of one catalogue. There is no query to
+        # prefix. The card's advice for everything else is `query: ` throughout,
+        # and the tune split agrees: 0.6649 [0.6618, 0.6681] against 0.6568
+        # [0.6538, 0.6598] for `passage: `, intervals disjoint.
+        prefix="query: ",
+        label="e5-base-v2 (query:)",
+        # Phase 7, on tune, 31,625 impressions, at the current HISTORY_K of 80:
         #
-        #   none 0.6250   centre 0.6320   abtt:1 0.6213   abtt:3 0.6061
-        #   abtt:5 0.5940  abtt:10 0.5810  whiten 0.5793
+        #   none 0.6414   centre 0.6649   abtt:1 0.6529   abtt:3 0.6407
+        #   abtt:5 0.6246                 whiten 0.6116
         #
-        # The contrast with EB-NeRD is the point. MiniLM is sentence-trained
-        # and arrives near-isotropic at 0.0630, so there is barely a cone to
-        # remove: correction buys 0.007 here against 0.060 there, and removing
-        # more than the mean costs up to 0.046, because on vectors that were
-        # never broken the leading directions carry signal rather than offset.
+        # `centre` by a disjoint interval over every one of the other 35 cells
+        # in the grid, and over the all-MiniLM-L6-v2 this replaces: 0.6649
+        # [0.6618, 0.6681] against 0.6506 [0.6473, 0.6537].
         #
-        # The tune preference for `centre` did not replicate. On validation
-        # auc goes 0.6252 [0.6219, 0.6286] -> 0.6227 [0.6195, 0.6259] -- down,
-        # not up, with the intervals overlapping -- while mrr, ndcg@5, ndcg@10
-        # and recall@200 (0.0344 -> 0.0456) all rise. So nothing is
-        # established either way on the ranking metrics here, and the honest
-        # reading is that MIND's geometry was not broken enough for this to
-        # matter.
-        #
-        # Kept anyway, because it is what the tune split chose. Reverting on
-        # the strength of a validation number would be selecting on validation,
-        # which is the contamination the tune split exists to prevent -- and a
-        # marginal effect that fails to replicate is the ordinary outcome that
-        # holding out a reporting split is designed to expose.
+        # The correction is worth more here than the encoder is. e5 arrives at
+        # an anisotropy of +0.7264 -- near the +0.95 that made EB-NeRD's mBERT
+        # score at chance -- and centring is worth +0.0235 to it, against
+        # +0.0143 to the near-isotropic MiniLM. Phase 7's ticket predicted the
+        # opposite, that MIND's geometry was already fine and only capacity
+        # was left to buy. See artifacts/embeddings-mind-tune.md.
         postprocess="centre",
     ),
     # The alternatives phase 7 encodes and compares. MIND ships no vectors at
@@ -542,6 +546,24 @@ MIND = DatasetConfig(
     # model rather than chosen: encoding at a different width produces vectors
     # that are not the model's.
     embedding_variants=(
+        # What the pipeline ran on until phase 7, and still the cheapest thing
+        # here at 384 dimensions. Chosen originally because it fitted a
+        # free-tier Colab GPU -- a compute constraint rather than a finding,
+        # which is what phase 7 went to the cluster to settle. Its own tune
+        # grid, at the HISTORY_K of 10 that phase 2 measured under, read
+        # none 0.6250 / centre 0.6320; re-measured at 80 it reads
+        # none 0.6363 / centre 0.6506. The window moved, so those two sets of
+        # numbers are not comparable to each other -- only within a grid.
+        EmbeddingSpec(
+            kind="generate",
+            model="sentence-transformers/all-MiniLM-L6-v2",
+            dim=384,
+            artifact="embeddings.npy",
+            gdrive_file_id="1tVfeai5eUVvrhRGZdowZQntAwHt2VkQR",
+            normalise=False,
+            max_tokens=256,
+            label="all-MiniLM-L6-v2",
+        ),
         EmbeddingSpec(
             kind="generate",
             model="sentence-transformers/all-mpnet-base-v2",

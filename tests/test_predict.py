@@ -211,16 +211,22 @@ def test_the_competitions_catalogue_is_encoded_where_the_artifact_is_empty(
     articles are not in, so aligning it onto this catalogue leaves every row
     zero. Left there, the semantic retriever would score every candidate 0 and
     submit the candidate file's own order under its name."""
+    # The width comes from the registry rather than a literal: MIND's encoder
+    # has already changed once (384-wide MiniLM to 768-wide e5), and a test
+    # that hard-codes the old number fails the next time it changes for a
+    # reason that has nothing to do with what it is testing.
+    width = MIND.embeddings.dim
     monkeypatch.setattr(
         embed,
         "read_source",
-        lambda config: (np.array(["N1"], dtype=object), np.eye(1, 384, dtype="float32")),
+        lambda config: (np.array(["N1"], dtype=object),
+                        np.eye(1, width, dtype="float32")),
     )
     encoded = []
 
     def fake_encode(texts, config, **kwargs):
         encoded.extend(texts)
-        rows = np.zeros((len(texts), 384), dtype="float32")
+        rows = np.zeros((len(texts), width), dtype="float32")
         rows[:, 1] = 1.0
         return rows
 
@@ -242,14 +248,15 @@ def test_a_cached_matrix_is_only_reused_for_the_corpus_it_was_built_for(
     """A matrix is positional. One built before the catalogue gained an article
     pairs every row after it with the wrong article and loads without
     complaint, which is a submission that is wrong and looks fine."""
+    width = MIND.embeddings.dim
     monkeypatch.setattr(
         embed, "read_source", lambda config: (np.array([], dtype=object),
-                                              np.zeros((0, 384), dtype="float32"))
+                                              np.zeros((0, width), dtype="float32"))
     )
     monkeypatch.setattr(
         embed, "encode",
         lambda texts, config, **kwargs: np.tile(
-            np.eye(1, 384, dtype="float32"), (len(texts), 1)
+            np.eye(1, width, dtype="float32"), (len(texts), 1)
         ),
     )
 

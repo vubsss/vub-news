@@ -26,6 +26,14 @@ class SplitError(RuntimeError):
     """The split is not strictly temporal. The build must not continue."""
 
 
+# Above this share of histories, a future click stops being bad publication
+# metadata and starts being a history joined from the wrong period or a split
+# boundary off by one -- which is what the guard exists to catch, and which
+# must stop the build rather than be dropped and mentioned. ebnerd_large sits
+# at 0.001%, three orders of magnitude below.
+FUTURE_CLICK_CEILING = 0.001
+
+
 class LeakageError(RuntimeError):
     """An impression can see the future. The build must not continue."""
 
@@ -48,30 +56,91 @@ def check_leakage(
     published = dict(
         zip(articles["article_id"], articles["published_time"], strict=True)
     )
-    joined = behaviors[["impression_id", "impression_time", "candidate_ids"]].merge(
+    keyed = behaviors[["impression_id", "impression_time", "candidate_ids", *ingest.HISTORY_KEYS]]
+    joined = keyed.merge(
         history[["impression_id", "click_history"]], on="impression_id"
     )
 
     report = {
         "impressions": len(joined),
+        # Two bases, and they are different questions. `clicks` is what the
+        # ranking stages will read, counted once per impression. `distinct` and
+        # `checked` are the guard's own coverage, counted once per history --
+        # reporting the guard's work against the readers' total would say the
+        # check saw 6% of the clicks when it saw all of them.
         "clicks": 0,
+        "distinct_clicks": 0,
         "clicks_checked": 0,
         "repeat_candidates": 0,
+        # Clicks on an article published after the user's first impression.
+        "future_clicks": 0,
+        "future_histories": 0,
     }
-    for impression_id, at, candidates, clicks in joined.itertuples(index=False):
-        report["clicks"] += len(clicks)
+    dropped: dict[tuple, set] = {}
+
+    # One history per (user, source), not one per impression. The two are the
+    # same object -- that is what the schema change made explicit -- and here
+    # the difference is 1.6M checks instead of 24.6M on ebnerd_large, which is
+    # what stopped this stage finishing at that scale.
+    #
+    # Checking a history against its key's **earliest** impression is exactly
+    # equivalent to checking it against each of them. The history does not vary
+    # between them, so a click published after any impression of that key is
+    # published after the earliest one, and a click that clears the earliest
+    # clears them all.
+    earliest = joined.groupby(ingest.HISTORY_KEYS, sort=False)["impression_time"].min()
+    seen: dict[tuple, set] = {}
+    for key, clicks in zip(
+        zip(*(joined[k] for k in ingest.HISTORY_KEYS)), joined["click_history"]
+    ):
+        if key in seen:
+            continue
+        seen[key] = set(clicks)
+        report["distinct_clicks"] += len(clicks)
+        at = earliest[key]
         for article_id in clicks:
             published_at = published.get(article_id)
             if published_at is None or pd.isna(published_at):
                 continue
             report["clicks_checked"] += 1
             if published_at > at:
-                raise LeakageError(
-                    f"impression {impression_id} at {at} has {article_id} in "
-                    f"its click history, but {article_id} was not published "
-                    f"until {published_at}"
-                )
-        if set(clicks) & set(candidates):
+                # Dropped rather than fatal, and counted rather than dropped
+                # quietly. On ebnerd_large this is 16 histories in 1,579,672
+                # with overshoots up to 31 days, which is publication metadata
+                # being wrong rather than a user seeing the future -- and it
+                # never fired on ebnerd_small only because that samples 18,827
+                # of the same 974,791 users. A guard that has never fired on a
+                # sample has not been shown to be clean on the whole.
+                #
+                # What the guard is *for* is systematic leakage: a history
+                # joined from the wrong period, an off-by-one in the split.
+                # That shows up as a rate, not as sixteen rows, and the rate is
+                # printed every run so it cannot become invisible.
+                report["future_clicks"] += 1
+                dropped.setdefault(key, set()).add(article_id)
+
+    for key, gone in dropped.items():
+        seen[key] -= gone
+    report["future_histories"] = len(dropped)
+
+    share = len(dropped) / max(len(seen), 1)
+    if share > FUTURE_CLICK_CEILING:
+        raise LeakageError(
+            f"{len(dropped):,} of {len(seen):,} histories ({share:.2%}) hold a "
+            f"click on an article published after that user's first impression. "
+            f"Above {FUTURE_CLICK_CEILING:.1%} that is not publication metadata, "
+            f"it is a history joined from the wrong period or a split boundary "
+            f"off by one, and the build must not continue."
+        )
+
+    # Clicks are counted per impression, because that is what the number means:
+    # how much history the ranking stages will read.
+    for key, candidates in zip(
+        zip(*(joined[k] for k in ingest.HISTORY_KEYS)), joined["candidate_ids"]
+    ):
+        clicked = seen[key]
+        report["clicks"] += len(clicked)
+        if clicked & set(candidates):
             report["repeat_candidates"] += 1
     return report
 
@@ -180,12 +249,22 @@ def run(config: DatasetConfig, force: bool = False) -> None:
 
     report_partitions(labelled)
 
-    checked, clicks = leakage["clicks_checked"], leakage["clicks"]
-    coverage = 100 * checked / clicks if clicks else 0.0
+    checked, distinct = leakage["clicks_checked"], leakage["distinct_clicks"]
+    coverage = 100 * checked / distinct if distinct else 0.0
     print(
-        f"    future-click guard checked {checked:,} of {clicks:,} clicks "
-        f"({coverage:.1f}% have a publication time to check against)"
+        f"    future-click guard checked {checked:,} of {distinct:,} distinct "
+        f"clicks ({coverage:.1f}% have a publication time to check against), "
+        f"over {leakage['clicks']:,} the ranking stages will read"
     )
+    if leakage["future_clicks"]:
+        share = 100 * leakage["future_histories"] / max(leakage["distinct_clicks"], 1)
+        print(
+            f"    dropped {leakage['future_clicks']:,} clicks from "
+            f"{leakage['future_histories']:,} histories: published after that "
+            f"user's first impression, which is publication metadata rather "
+            f"than a user seeing the future at this rate ({share:.4f}%). A rate "
+            f"that is not tiny is systematic leakage and must stop the build."
+        )
     repeats, impressions = leakage["repeat_candidates"], leakage["impressions"]
     share = 100 * repeats / impressions if impressions else 0.0
     print(

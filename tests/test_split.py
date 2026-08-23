@@ -107,11 +107,37 @@ def test_a_click_on_an_article_published_later_aborts_the_run():
     )
 
     clean = history([("i0", ["a1"]), ("i1", ["a1"])])
-    split.check_leakage(impressions, joined(clean, impressions), catalogue)
+    report = split.check_leakage(impressions, joined(clean, impressions), catalogue)
+    assert report["future_clicks"] == 0
 
     leaked = history([("i0", ["a1", "a2"]), ("i1", ["a1"])])
-    with pytest.raises(split.LeakageError, match="a2"):
+    # Half the histories, which is systematic rather than metadata, so it stops
+    # the build — that is what the guard is for.
+    with pytest.raises(split.LeakageError, match="histories"):
         split.check_leakage(impressions, joined(leaked, impressions), catalogue)
+
+
+def test_a_rare_future_click_is_dropped_and_counted_rather_than_fatal():
+    """Publication metadata is wrong occasionally and a user is not seeing the
+    future because of it: ebnerd_large has 16 such histories in 1,579,672, with
+    overshoots up to 31 days, and ebnerd_small has none only because it samples
+    18,827 of the same 974,791 users. The click is removed from the profile and
+    the rate printed; the guard still stops a build where the rate says the
+    history came from the wrong period."""
+    stamp = "2019-11-10 12:00:00"
+    impressions = behaviors([stamp] * 2000)
+    catalogue = articles(
+        [("a1", "2019-11-08 06:00:00"), ("a2", "2019-11-12 06:00:00")]
+    )
+    # One history in two thousand holds the article published later.
+    rows = [(f"i{i}", ["a1"]) for i in range(2000)]
+    rows[7] = ("i7", ["a1", "a2"])
+
+    report = split.check_leakage(impressions, joined(history(rows), impressions), catalogue)
+
+    assert report["future_clicks"] == 1
+    assert report["future_histories"] == 1
+    assert report["repeat_candidates"] == 0
 
 
 def test_an_already_clicked_candidate_is_counted_not_assumed_impossible():
@@ -195,7 +221,10 @@ def test_running_the_split_twice_changes_nothing(store):
     pd.testing.assert_frame_equal(first, second)
 
 
-def test_run_aborts_on_a_future_click(store):
+def test_run_aborts_when_the_future_click_rate_says_systematic(store):
+    """One history in seven is well past the ceiling, so this is a history
+    joined from the wrong period rather than bad publication metadata, and the
+    stage must stop rather than drop it."""
     impressions, clicks, catalogue = week()
     clicks.at[0, "click_history"] = ["a1", "a2"]
     catalogue = pd.concat(
@@ -203,7 +232,7 @@ def test_run_aborts_on_a_future_click(store):
     )
     write_store(store, impressions, clicks, catalogue)
 
-    with pytest.raises(split.LeakageError, match="a2"):
+    with pytest.raises(split.LeakageError, match="histories"):
         split.run(MIND)
 
 

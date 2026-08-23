@@ -102,15 +102,33 @@ arches = torch.cuda.get_arch_list()
 print("device       ", name, f"sm_{major}{minor}")
 print("arch list    ", " ".join(arches))
 
-# Both, not just this node's. The encode job cannot choose its card, so a
-# wheel that works here and not on the Pascal half of the fleet is a job that
-# fails whenever the scheduler feels like it.
-for needed in ("sm_61", "sm_75"):
-    assert needed in arches, (
-        f"this wheel ships {arches} and the cluster has {needed} cards: "
-        f"the job would fail on whichever nodes it lands on. Use a CUDA 12 "
-        f"build -- CUDA 13 dropped Pascal."
+# Both cards, not just this node's: the encode job cannot choose, so a wheel
+# that works here and not on the Pascal half of the fleet fails whenever the
+# scheduler feels like it.
+#
+# Membership in the arch list is the wrong test, and this assertion failed on
+# a working environment before it was corrected. CUDA guarantees binary
+# compatibility *forward across minor revisions*: a cubin built for sm_XY runs
+# on any sm_XZ with the same major and Z >= Y. The cu126 wheel ships sm_50,
+# sm_60, sm_70 ... and no sm_61 -- and runs on a GTX 1080 Ti anyway, on sm_60's
+# cubin. Verified on gnode004 rather than argued: a 4096x4096 matmul and a real
+# encoder forward pass, both on the card.
+def usable(capability: str) -> bool:
+    major, minor = int(capability[3]), int(capability[4:])
+    return any(
+        int(a[3]) == major and int(a[4:]) <= minor
+        for a in arches if a.startswith("sm_")
     )
+
+
+for needed in ("sm_61", "sm_75"):
+    assert usable(needed), (
+        f"this wheel ships {arches} and the cluster has {needed} cards with "
+        f"nothing at or below them in the same major: the job would fail on "
+        f"whichever nodes it lands on. Use a CUDA 12 build -- CUDA 13 dropped "
+        f"Pascal entirely."
+    )
+    print(f"covers       {needed}")
 
 # Not a formality: an arch list can match and the kernels still be absent.
 a = torch.randn(2048, 2048, device="cuda")

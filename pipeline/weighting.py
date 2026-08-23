@@ -31,6 +31,17 @@ from pipeline.datasets import DatasetConfig
 
 SCHEMES = ("uniform", "position", "time", "engagement")
 
+# What each scheme reads beside the click ids. One table, because three things
+# now need the answer: which schemes a dataset supports, which columns the
+# submission path has to stream, and which it can leave behind. `position`
+# reads nothing -- a click's place in the window is the window's own shape.
+READS: dict[str, tuple[str, ...]] = {
+    "uniform": (),
+    "position": (),
+    "time": ("click_times",),
+    "engagement": ("click_read_times", "click_scroll"),
+}
+
 # What `read_time` and `scroll_percentage` are turned into. read_time is
 # clipped at 1800 seconds with a median of 14, so it is a long tail that raw
 # would let one 30-minute read outvote twenty ordinary ones; log1p damps it to
@@ -50,12 +61,21 @@ def available(config: DatasetConfig) -> tuple[str, ...]:
     bare id list: it has positions but no timestamps and no engagement.
     """
     history = config.columns.history
-    schemes = ["uniform", "position"]
-    if history.get("click_times"):
-        schemes.append("time")
-    if history.get("click_read_times") and history.get("click_scroll"):
-        schemes.append("engagement")
-    return tuple(schemes)
+    return tuple(
+        scheme
+        for scheme in SCHEMES
+        if all(history.get(column) for column in READS[scheme])
+    )
+
+
+def columns_for(scheme: str) -> tuple[str, ...]:
+    """The history columns this scheme reads, beside the click ids.
+
+    The submission path streams 808k histories and cannot carry columns
+    nothing will read, so it asks here rather than carrying all three. An
+    unknown scheme is left to `check` to reject with a useful message.
+    """
+    return READS.get(scheme, ())
 
 
 def check(config: DatasetConfig, scheme: str, history_k: int | None = None) -> None:

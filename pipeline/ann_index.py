@@ -85,26 +85,77 @@ def build_user_vectors(
     ), report
 
 
-def require_expressible(config: DatasetConfig) -> None:
+def weighted_user_vectors(
+    history: pd.DataFrame,
+    embeddings: embed.Embeddings,
+    config: DatasetConfig,
+    history_k: int = retrieval.HISTORY_K,
+) -> Queries:
+    """One vector per impression: the *weighted* mean of its clicked rows.
+
+    `build_user_vectors` above is this with equal weights, and the reason both
+    exist is cost. Scoring a weighted profile the way the feature-store path
+    does — every candidate against every click, then weight, then pool — is a
+    (candidates x clicks) matmul per impression, which the submission cannot
+    afford 13.5 million times. The weighted mean is the one aggregator that
+    collapses into a single vector first:
+
+        sum_i w_i (c . x_i)  ==  c . (sum_i w_i x_i)
+
+    so the weights are applied to the clicks once, and the ranking that comes
+    out is the same ranking `score_candidates_pooled` produces the slow way.
+    `require_expressible` is what keeps that identity's condition true.
+
+    The weights arrive already normalised and already subset to the clicks the
+    catalogue holds, which is what `Clicks.kept` is for: pairing them with the
+    full window instead would land every weight on the wrong click.
+    """
+    clicks = build_clicks(history, embeddings, history_k)
+    at = (
+        history["impression_time"].reset_index(drop=True)
+        if "impression_time" in history
+        else None
+    )
+    weights = click_weights(config, history, clicks, history_k, at)
+
+    width = embeddings.vectors.shape[1]
+    vectors = np.zeros((len(clicks.rows), width), dtype="float32")
+    for i, (rows, weight) in enumerate(zip(clicks.rows, weights, strict=True)):
+        if len(rows):
+            vectors[i] = embeddings.vectors[rows].T @ weight.astype("float32")
+
+    # Rescaled like the unweighted path, so a score is a cosine. A positive
+    # rescale per impression cannot reorder that impression's candidates.
+    return Queries(
+        impression_ids=clicks.impression_ids,
+        vectors=embed.normalise(vectors),
+    )
+
+
+def require_expressible(pooling: str = retrieval.POOLING) -> None:
     """That the submission path can rank the way the registry says to.
 
-    `predict` streams the competition's own history table, which carries click
-    ids alone — no timestamps, no read time, no scroll. A weighting scheme that
-    reads one of those columns is measurable on the feature store and not
-    reproducible on the submission, and the gap is invisible in the output: the
-    file would be well-formed, correctly ordered, and produced by a different
-    model from the one every reported number came from.
+    Every weighting scheme is expressible here now that `predict` streams the
+    columns each one reads. What is not is an aggregator other than `mean`.
+    The submission ranks 13.5M impressions against a catalogue, which it can
+    only afford as one vector per impression, and the identity that makes a
+    weighted profile *fit* in one vector
 
-    So it raises, and phase 9 has to either carry the columns through the
-    streaming path or submit under a scheme that needs none.
+        sum_i w_i (c . x_i)  ==  c . (sum_i w_i x_i)
+
+    holds for a weighted mean and for nothing else. `max` asks which single
+    click matches best, which is not a dot product with any vector.
+
+    So it raises rather than quietly ranking by the mean: a submission file
+    produced by a different aggregator from the one every reported number came
+    from would be well-formed, correctly ordered, and wrong in the one way
+    nothing downstream could see.
     """
-    if config.weighting.scheme in ("time", "engagement"):
+    if pooling != "mean":
         raise weighting.WeightingError(
-            f"{config.name} is configured to weight clicks by "
-            f"{config.weighting.scheme!r}, which the submission path cannot "
-            f"express: the streamed history carries ids only. Either carry the "
-            f"engagement columns through predict._histories, or submit with a "
-            f"scheme that reads none of them."
+            f"the submission path cannot express {pooling!r} pooling: it ranks "
+            f"by one vector per impression, which only a weighted mean folds "
+            f"into. Submit under 'mean', or give predict a per-click scorer."
         )
 
 
@@ -451,6 +502,12 @@ def click_weights(
     }
     stamps = list(at) if at is not None else [None] * len(history)
 
+    # The window's own length, not the length of whichever column happens to
+    # be present. `kept` is a subset -- the clicks the catalogue has vectors
+    # for -- so sizing the weights by it would build an array shorter than the
+    # positions `found[kept]` then indexes with.
+    windows = [len(clicks[-history_k:]) for clicks in history["click_history"]]
+
     built: list[np.ndarray] = []
     for position, kept in enumerate(clicks.kept):
         window = {}
@@ -462,9 +519,7 @@ def click_weights(
         found = weighting.weights(
             spec.scheme,
             spec.decay,
-            len(window["click_times"])
-            if window["click_times"] is not None
-            else len(kept),
+            windows[position],
             times=window["click_times"],
             read_times=window["click_read_times"],
             scroll=window["click_scroll"],
@@ -527,13 +582,17 @@ class Ranker:
     config: DatasetConfig
 
     def rank(self, history: pd.DataFrame, candidates: list[list[str]]) -> pd.DataFrame:
-        # The streamed submission history carries click ids and nothing beside
-        # them, so a scheme that reads an engagement column cannot be honoured
-        # here. Refused rather than quietly ranked uniform: submitting a
-        # different model from the one every reported number was measured on is
-        # the one failure a submission path must not have.
-        require_expressible(self.config)
-        queries, _ = build_user_vectors(history, self.embeddings, self.history_k)
+        require_expressible()
+        # Uniform keeps the original path rather than a weighted one with equal
+        # weights. The two agree, but only one of them is the path every
+        # recorded number came from, and MIND's submission is already ranked by
+        # it -- see click_weights, which returns None for the same reason.
+        if self.config.weighting.scheme == "uniform":
+            queries, _ = build_user_vectors(history, self.embeddings, self.history_k)
+        else:
+            queries = weighted_user_vectors(
+                history, self.embeddings, self.config, self.history_k
+            )
         return self.index.score_candidates(queries, candidates)
 
 

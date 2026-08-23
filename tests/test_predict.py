@@ -396,9 +396,39 @@ def test_only_the_clicks_a_retriever_reads_are_kept(ebnerd_competition):
         {"user_id": [11], **_engagement([[1, 2, 3, 1, 2]])}
     ).to_parquet(path, index=False)
 
-    kept = predict._histories(EBNERD, history_k=3)
+    streamed = predict._histories(EBNERD, history_k=3)
 
-    assert kept == {"11": ["3", "1", "2"]}
+    assert streamed.clicks == {"11": ["3", "1", "2"]}
+
+
+def test_the_streamed_history_carries_what_the_weighting_reads(
+    ebnerd_competition,
+):
+    """EB-NeRD weights clicks by engagement, and the arrays that describes it
+    with run parallel to the ids. Truncated to the same suffix, or every weight
+    lands on the wrong click; and truncated to *only* what the scheme reads,
+    because `click_times` at 808k users is 500 MB spent on a column engagement
+    never looks at."""
+    path = EBNERD.raw_dir / "testset" / "test" / "history.parquet"
+    pd.DataFrame(
+        {"user_id": [11], **_engagement([[1, 2, 3, 1, 2]])}
+    ).to_parquet(path, index=False)
+
+    streamed = predict._histories(EBNERD, history_k=3)
+
+    assert set(streamed.columns) == {"click_read_times", "click_scroll"}
+    for column in streamed.columns.values():
+        assert len(column["11"]) == 3, "aligned with the three ids kept"
+
+
+def test_a_user_the_history_never_mentions_weights_nothing(ebnerd_competition):
+    """A cold start is an empty window, not a missing key that raises on the
+    chunk that happens to contain them."""
+    chunk = next(predict.impressions(EBNERD, chunk_size=10))
+
+    cold = chunk.index[chunk["click_history"].map(len) == 0][0]
+    assert len(chunk["click_read_times"][cold]) == 0
+    assert len(chunk["click_scroll"][cold]) == 0
 
 
 def test_the_ebnerd_submission_ranks_the_candidates_it_was_given(

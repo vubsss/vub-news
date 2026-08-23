@@ -247,20 +247,146 @@ def test_the_weighted_query_repeats_a_recent_title_more_than_an_old_one():
 # --- the submission path cannot silently disagree with the measurement ------
 
 
-def test_the_submission_path_refuses_a_scheme_it_cannot_express():
-    """`predict` streams the competition's history table, which carries click
-    ids alone. A scheme reading an engagement column is measurable on the
-    feature store and not reproducible on the submission — and the gap is
-    invisible in the output, because the file would be well-formed, correctly
-    ordered, and produced by a different model from the one every reported
-    number came from."""
-    with pytest.raises(weighting.WeightingError, match="cannot express"):
-        ann_index.require_expressible(
-            weighted(EBNERD, scheme="engagement")
-        )
+def test_the_guard_no_longer_turns_on_the_weighting_scheme():
+    """`predict` streams the columns each scheme reads, so none of them is
+    measurable on the feature store and unreproducible on the submission any
+    more. That gap used to be what this guard was about, and it was a real one:
+    the file would have been well-formed, correctly ordered, and produced by a
+    different model from the one every reported number came from. What decides
+    now is the aggregator, which no scheme changes."""
+    assert weighting.columns_for("engagement") == (
+        "click_read_times", "click_scroll",
+    )
+    ann_index.require_expressible()
 
 
-def test_a_scheme_needing_no_extra_column_passes_the_submission_check():
-    """position reads the order of the ids, which the streamed history has."""
-    for scheme in ("uniform", "position"):
-        ann_index.require_expressible(weighted(EBNERD, scheme=scheme))
+def test_the_submission_path_refuses_a_pooling_it_cannot_express():
+    """What is still inexpressible is an aggregator that does not collapse into
+    one vector. `max` asks which single click matches best, which is not a dot
+    product with any vector, and the submission can only afford one vector per
+    impression across 13.5M of them."""
+    for pooling in ("max", "last"):
+        with pytest.raises(weighting.WeightingError, match="cannot express"):
+            ann_index.require_expressible(pooling)
+
+
+def test_the_weighted_mean_is_what_the_guard_lets_through():
+    """The identity the submission path rests on holds for `mean` alone."""
+    ann_index.require_expressible("mean")
+
+
+# --- the two paths must produce the same ranking ----------------------------
+
+
+def engaged_history():
+    """One impression whose three clicks were read to very different depths."""
+    return pd.DataFrame(
+        {
+            "impression_id": pd.Series(["i1"], dtype="string"),
+            "user_id": ["u1"],
+            "impression_time": pd.to_datetime(["2023-06-02 07:00"]),
+            "click_history": [["a", "b", "c"]],
+            "click_read_times": [np.array([600.0, 1.0, 1.0])],
+            "click_scroll": [np.array([100.0, 5.0, 5.0])],
+        }
+    )
+
+
+def spread_catalogue():
+    """Four articles, three of them clicked, pointing in different directions."""
+    matrix = np.array(
+        [
+            [1.0, 0.0, 0.0],   # a, the one that was read properly
+            [0.0, 1.0, 0.0],   # b
+            [0.0, 1.0, 0.0],   # c, b again
+            [0.9, 0.4, 0.0],   # d, a candidate leaning toward a
+            [0.1, 1.0, 0.0],   # e, a candidate leaning toward b and c
+        ],
+        dtype="float32",
+    )
+    return embed.Embeddings(
+        article_ids=np.array(["a", "b", "c", "d", "e"], dtype=object),
+        vectors=embed.normalise(matrix),
+    )
+
+
+def test_the_submission_path_ranks_as_the_feature_store_path_does():
+    """The whole point of the identity. `score_candidates_pooled` weights every
+    candidate against every click and then pools; the submission folds the
+    weights into one vector first because it cannot afford the matmul 13.5M
+    times. Same ranking, or the file does not describe the measured model."""
+    config = weighted(EBNERD, scheme="engagement")
+    history, embeddings = engaged_history(), spread_catalogue()
+    index = ann_index.build(embeddings)
+    candidates = [["d", "e"]]
+
+    clicks = ann_index.build_clicks(history, embeddings, history_k=10)
+    weights = ann_index.click_weights(config, history, clicks, 10)
+    slow = index.score_candidates_pooled(clicks, candidates, "mean", weights)
+
+    queries = ann_index.weighted_user_vectors(history, embeddings, config, 10)
+    fast = index.score_candidates(queries, candidates)
+
+    assert list(fast["ranked_ids"][0]) == list(slow["ranked_ids"][0])
+
+
+def test_engagement_actually_moves_the_submissions_ranking():
+    """Guards the test above against being vacuously true, and guards the
+    wiring: this goes through `Ranker.rank`, which is what `predict` calls, so
+    a rank() that stopped consulting the weighting fails here. Two of the three
+    clicks were abandoned; unweighted they outvote the one that was read."""
+    history, embeddings = engaged_history(), spread_catalogue()
+    index = ann_index.build(embeddings)
+    candidates = [["d", "e"]]
+
+    def ranked(scheme):
+        found = ann_index.Ranker(
+            index=index,
+            embeddings=embeddings,
+            history_k=10,
+            config=weighted(EBNERD, scheme=scheme),
+        ).rank(history, candidates)
+        return list(found["ranked_ids"][0])
+
+    assert ranked("engagement") == ["d", "e"], "the read click carries it"
+    assert ranked("uniform") == ["e", "d"], "two abandoned ones outvote it"
+
+
+def test_the_lexical_submission_path_weights_its_query_too(tmp_path):
+    """The sibling defect, and the quieter one. `Ranker.rank` used to call
+    `build_queries` with no weights at all while the registry said engagement,
+    so the submission ranked by a different profile from the one every reported
+    number came from — and unlike the semantic side it did not refuse, it just
+    did it. Nothing in a well-formed, correctly ordered file could show it."""
+    corpus = pd.DataFrame(
+        {
+            "article_id": pd.Series(["a", "b", "c"], dtype="string"),
+            "title": pd.Series(["kage", "fodbold", "fodbold"], dtype="string"),
+            "abstract": pd.Series(["", "", ""], dtype="string"),
+            "lexical_text": pd.Series(["kage", "fodbold", "fodbold"], dtype="string"),
+        }
+    )
+    chunk = pd.DataFrame(
+        {
+            "impression_id": pd.Series(["i1"], dtype="string"),
+            "impression_time": pd.to_datetime(["2023-06-02 07:00"]),
+            "click_history": [["a", "b", "c"]],
+            "click_read_times": [np.array([600.0, 1.0, 1.0])],
+            "click_scroll": [np.array([100.0, 5.0, 5.0])],
+        }
+    )
+    candidates = [["a", "b"]]
+
+    engaged = bm25_index.ranker(
+        corpus, weighted(EBNERD, scheme="engagement"), tmp_path / "engaged"
+    ).rank(chunk, candidates)
+    flat = bm25_index.ranker(
+        corpus, weighted(EBNERD, scheme="uniform"), tmp_path / "flat"
+    ).rank(chunk, candidates)
+
+    assert list(engaged["ranked_ids"][0]) == ["a", "b"], (
+        "the click that was read to the end carries the query"
+    )
+    assert list(flat["ranked_ids"][0]) == ["b", "a"], (
+        "unweighted, the two abandoned clicks outvote it two to one"
+    )

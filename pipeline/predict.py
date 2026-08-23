@@ -28,13 +28,15 @@ import csv
 import time
 import zipfile
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
-from pipeline import acquire, evaluate, paths, preprocess, retrieval
+from pipeline import acquire, evaluate, paths, preprocess, retrieval, weighting
 from pipeline.datasets import DATASETS, DatasetConfig, TableSource
 
 # The retriever a submission is generated with unless one is named. Ticket 11
@@ -128,22 +130,48 @@ def impressions(
     the difference is whether `spec.history` is there.
     """
     source = config.submission.impressions
-    clicks = _histories(config, history_k)
+    streamed = _histories(config, history_k)
     for name in source.files:
         for raw in _read(config, source, name, chunk_size):
             chunk = source.adapt(raw)
-            if clicks is not None:
+            if streamed is not None:
+                users = list(chunk["user_id"])
                 chunk["click_history"] = [
-                    clicks.get(user_id, []) for user_id in chunk["user_id"]
+                    streamed.clicks.get(user_id, []) for user_id in users
                 ]
+                for column, per_user in streamed.columns.items():
+                    chunk[column] = [
+                        per_user.get(user_id, _NOTHING) for user_id in users
+                    ]
             yield chunk
 
 
-def _histories(
-    config: DatasetConfig, history_k: int
-) -> dict[str, list[str]] | None:
-    """Every user's last history_k clicks, for a competition that ships them
-    apart from the impressions. None when the impression row carries its own.
+# What a user the history table never mentions contributes to a weighted
+# profile: no clicks, so no weights. Shared rather than allocated per row.
+_NOTHING = np.empty(0)
+
+
+@dataclass(frozen=True)
+class Histories:
+    """Every user's last history_k clicks, and what the weighting reads of them.
+
+    `clicks` is the ids; `columns` holds one dict per parallel array the
+    configured scheme needs — `click_read_times` and `click_scroll` for
+    engagement, `click_times` for time, nothing at all for uniform. Keyed by
+    column and then by user rather than a record per user, because a dict per
+    user is 150 MB of dict headers at EB-NeRD's 808k of them.
+
+    The arrays are truncated to the same `[-history_k:]` suffix as the ids, so
+    they stay aligned with the window every consumer slices.
+    """
+
+    clicks: dict[str, list[str]]
+    columns: dict[str, dict[str, np.ndarray]]
+
+
+def _histories(config: DatasetConfig, history_k: int) -> Histories | None:
+    """The history table a competition ships apart from its impressions.
+    None when the impression row carries its own.
 
     Two things keep this inside a machine's memory rather than several times
     over. EB-NeRD's test table is 808k users averaging 144 clicks each, and
@@ -152,12 +180,18 @@ def _histories(
     is 116M ids read and 8M kept. And the ids that survive are interned against
     the 126k articles that exist, so a click on a popular article costs a
     pointer rather than another copy of its id.
+
+    The same argument decides which of the parallel arrays come along: only the
+    ones the configured scheme reads. Carrying `click_times` for an engagement
+    profile that never looks at it would be 500 MB spent on nothing.
     """
     source = config.submission.history
     if source is None:
         return None
 
+    wanted = weighting.columns_for(config.weighting.scheme)
     kept: dict[str, list[str]] = {}
+    columns: dict[str, dict[str, np.ndarray]] = {name: {} for name in wanted}
     unique: dict[str, str] = {}
     for name in source.files:
         for raw in _read(config, source, name, HISTORY_CHUNK):
@@ -166,7 +200,11 @@ def _histories(
                 kept[user_id] = [
                     unique.setdefault(click, click) for click in clicks[-history_k:]
                 ]
-    return kept
+            for column in wanted:
+                per_user = columns[column]
+                for user_id, values in zip(rows["user_id"], rows[column]):
+                    per_user[user_id] = np.asarray(values)[-history_k:]
+    return Histories(clicks=kept, columns=columns)
 
 
 def _read(

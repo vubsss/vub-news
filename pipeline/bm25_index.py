@@ -585,7 +585,19 @@ class Ranker:
     history_k: int
 
     def rank(self, history: pd.DataFrame, candidates: list[list[str]]) -> pd.DataFrame:
-        queries, _ = build_queries(history, self.articles, self.config, self.history_k)
+        # The weights the feature-store path builds, built here too. Omitting
+        # them used to be silent: the query was assembled unweighted while the
+        # registry said otherwise, so the file ranked by a different profile
+        # from the one every reported number was measured on and nothing in the
+        # output could show it.
+        served = dict(zip(history["impression_id"], history["impression_time"]))
+        queries, _ = build_queries(
+            history,
+            self.articles,
+            self.config,
+            self.history_k,
+            weights=query_weights(self.config, history, self.history_k, served),
+        )
         return self.index.score_candidates(queries, candidates)
 
 

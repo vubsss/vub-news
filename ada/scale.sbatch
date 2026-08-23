@@ -1,8 +1,13 @@
 #!/bin/bash
 # Phase 8: build a large distribution and record what every stage cost.
 #
-#     sbatch ada/scale.sbatch mind_large
 #     sbatch ada/scale.sbatch ebnerd_large
+#     sbatch ada/scale.sbatch ebnerd_large --only bm25 ann
+#
+# Arguments after the dataset go to build.py, which is how the large runs are
+# staged: `evaluate` at this scale is projected past the walltime (see below),
+# so the growth table is collected from the stages that finish and `evaluate`
+# is measured separately, bounded.
 #
 # Separate from build.sbatch because the placement is different, and the
 # placement is the whole difference. That one keeps results on /home, which is
@@ -38,10 +43,19 @@
 # 32 CPUs and 100 GB: the practical ceiling for this account, and the point of
 # asking for it is to find out whether the large build needs it. Phase 6
 # measured the small build peaking at 23.6 GB in `evaluate`.
+#
+# `evaluate` is also the stage this walltime cannot hold at large scale. It
+# scored EB-NeRD's 100,981 validation impressions in 1h04m -- 26 a second --
+# and ebnerd_large carries roughly fifty times the users, which projects past
+# 40 hours. That is the ticket's own question answered rather than a setback:
+# the stage that breaks first at the next 10x is `evaluate`, and running it to
+# completion would spend a day of cluster time confirming a projection. So the
+# large runs are staged with --only, and evaluate is measured bounded.
 
 set -euo pipefail
 
-DATASET="${1:?usage: sbatch ada/scale.sbatch <dataset>}"
+DATASET="${1:?usage: sbatch ada/scale.sbatch <dataset> [build.py args...]}"
+shift
 REPO="$HOME/vub-news"
 STAGE="/scratch/$USER/vub-news-scale"
 RESULTS="$STAGE/run"
@@ -114,6 +128,6 @@ if [ "${DATASET#mind}" != "$DATASET" ]; then
             --variant "e5-base-v2 (query:)" --device "$DEVICE"
 fi
 
-echo "--- build.py --dataset $DATASET ---"
-/usr/bin/time -v "$ENV_PY" build.py --dataset "$DATASET" \
+echo "--- build.py --dataset $DATASET $* ---"
+/usr/bin/time -v "$ENV_PY" build.py --dataset "$DATASET" "$@" \
     2> >(tee "$KEEP/last-scale-$DATASET.time" >&2)

@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pipeline import evaluate, paths
-from pipeline.datasets import DATASETS, DatasetConfig
+from pipeline.datasets import DATASETS, DEFAULT_DATASETS, DatasetConfig
 
 # The question this module answers is about two named approaches, so it
 # compares a pair rather than everything `evaluate.RETRIEVERS` can score: bm25
@@ -898,7 +898,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    configs = [DATASETS[name] for name in (args.dataset or sorted(DATASETS))]
+    configs = [DATASETS[name] for name in (args.dataset or DEFAULT_DATASETS)]
     try:
         comparisons = [
             comparison(config, args.split, args.window) for config in configs

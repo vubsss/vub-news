@@ -37,7 +37,7 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from pipeline import acquire, evaluate, paths, preprocess, retrieval, weighting
-from pipeline.datasets import DATASETS, DatasetConfig, TableSource
+from pipeline.datasets import DATASETS, DEFAULT_DATASETS, DatasetConfig, TableSource
 
 # The retriever a submission is generated with unless one is named. Ticket 11
 # separated the two on MIND's validation split by disjoint bootstrap intervals
@@ -495,7 +495,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     paths.load_env_file()
 
-    for name in args.dataset or sorted(DATASETS):
+    for name in args.dataset or DEFAULT_DATASETS:
         config = DATASETS[name]
         unbuilt = _unbuilt(config)
         if unbuilt:

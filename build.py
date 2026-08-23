@@ -18,7 +18,7 @@ import sys
 
 from pipeline import paths, stages, timings
 from pipeline.acquire import AcquisitionError
-from pipeline.datasets import DATASETS, DatasetConfig
+from pipeline.datasets import DATASETS, DEFAULT_DATASETS, DatasetConfig
 from pipeline.embed import EmbeddingError
 from pipeline.predict import NotBuilt
 from pipeline.stages import STAGES, Stage
@@ -113,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     paths.load_env_file()
 
-    datasets = [DATASETS[name] for name in (args.dataset or sorted(DATASETS))]
+    datasets = [DATASETS[name] for name in (args.dataset or DEFAULT_DATASETS)]
 
     forced = set(args.force)
     if "all" in forced:

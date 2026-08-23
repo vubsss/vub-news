@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from pipeline import ingest
 from pipeline.datasets import DatasetConfig, SplitSpec
 
 TRAIN, TUNE, VALIDATION, TEST = "train", "tune", "validation", "test"
@@ -168,10 +169,12 @@ def run(config: DatasetConfig, force: bool = False) -> None:
     """
     behaviors_path = config.feature_store_dir / "behaviors.parquet"
     behaviors = pd.read_parquet(behaviors_path)
-    history = pd.read_parquet(config.feature_store_dir / "history.parquet")
     articles = pd.read_parquet(config.feature_store_dir / "articles.parquet")
 
     labelled = assign(behaviors, config.split)
+    # The per-impression view, because the guard is about one impression's own
+    # clicks against its own timestamp. The stored table is keyed by the user.
+    history = ingest.history_for(config, labelled, columns=("click_history",))
     leakage = check_leakage(labelled, history, articles)
     labelled.to_parquet(behaviors_path, index=False)
 

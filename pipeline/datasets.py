@@ -9,6 +9,7 @@ rather than branching on the name.
 from __future__ import annotations
 
 from collections.abc import Callable
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -943,4 +944,69 @@ EBNERD = DatasetConfig(
     ),
 )
 
-DATASETS = {config.name: config for config in (MIND, EBNERD)}
+# --- the large distributions -------------------------------------------------
+# Phase 8. The same pipeline over the full releases rather than the sampled
+# ones, which is the assignment's ten-times-scale question asked with data
+# rather than prose.
+#
+# Everything but three fields is shared with the small entry, and that is the
+# point: switching scale is a registry change and no stage learns about it. The
+# three are the name -- which relocates the raw directory, the feature store and
+# the artifacts, so the two scales cannot overwrite each other's results -- the
+# archives, and the split.
+#
+# The **split is unchanged**, which the ticket did not expect. Both large
+# releases are more *users* over the same period, not more days: MINDsmall is a
+# 50k-user sample of MINDlarge's ~1M over the same six days, and ebnerd_small
+# is a user sample of ebnerd_large over the same two weeks. Day counts chosen
+# for the small bundles' spans are therefore right for the large ones too, and
+# the spec's original "a week each" is still unaffordable for the same reason
+# as before. Verified against the ingested timestamps rather than assumed --
+# see phase_8.md.
+
+
+def at_large_scale(
+    config: DatasetConfig, archives: tuple[Archive, ...], expected_files: tuple[str, ...]
+) -> DatasetConfig:
+    """The same dataset, the full release. Name, archives, nothing else."""
+    return dataclasses.replace(
+        config,
+        name=f"{config.name}_large",
+        raw=dataclasses.replace(
+            config.raw, archives=archives, expected_files=expected_files
+        ),
+    )
+
+
+MIND_LARGE = at_large_scale(
+    MIND,
+    archives=(
+        Archive(f"{_HF_MIND}/MINDlarge_train.zip", "MINDlarge_train.zip", "train"),
+        Archive(f"{_HF_MIND}/MINDlarge_dev.zip", "MINDlarge_dev.zip", "dev"),
+    ),
+    expected_files=MIND.raw.expected_files,
+)
+
+EBNERD_LARGE = at_large_scale(
+    EBNERD,
+    # The four embedding artifacts come along unchanged: they cover the whole
+    # release, not the sample, so the same files serve both scales.
+    archives=(
+        Archive(f"{_EBNERD_S3}/ebnerd_large.zip", "ebnerd_large.zip", ""),
+        *EBNERD.raw.archives[1:],
+    ),
+    expected_files=EBNERD.raw.expected_files,
+)
+
+DATASETS = {
+    config.name: config
+    for config in (MIND, EBNERD, MIND_LARGE, EBNERD_LARGE)
+}
+
+# The scale the project works at unless a command is told otherwise. The large
+# entries are addressable by name everywhere, and reached only on purpose:
+# acquiring them is 3.7 GB and building them is phase 8's experiment rather
+# than the configuration everything else is reported at. A command that fanned
+# out over the whole registry by default would start that download because the
+# registry gained two rows.
+DEFAULT_DATASETS = (MIND.name, EBNERD.name)

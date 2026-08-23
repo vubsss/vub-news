@@ -21,7 +21,7 @@ import argparse
 import json
 
 from pipeline import evaluate, ingest, paths
-from pipeline.datasets import DATASETS, DatasetConfig
+from pipeline.datasets import DATASETS, DEFAULT_DATASETS, DatasetConfig
 
 DOCUMENT = "three-way-{split}.md"
 
@@ -223,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resamples", type=int, default=evaluate.BOOTSTRAP_RESAMPLES)
     args = parser.parse_args(argv)
 
-    datasets = args.dataset or sorted(DATASETS)
+    datasets = args.dataset or list(DEFAULT_DATASETS)
     paired = None
     if args.paired:
         paired = {}

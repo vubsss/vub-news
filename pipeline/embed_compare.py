@@ -35,8 +35,12 @@ from pipeline.datasets import DATASETS, DatasetConfig, EmbeddingSpec
 # tenth only costs a cell.
 METHODS = ("none", "centre", "abtt:1", "abtt:3", "abtt:5", "whiten")
 
-RESULTS = "embeddings-{split}.jsonl"
-DOCUMENT = "embeddings-{split}.md"
+# Named for the dataset as well as the split, like every other comparison this
+# project writes. Without the dataset in it, running the grid on MIND would
+# overwrite EB-NeRD's -- silently, and with a table that looks entirely
+# well-formed under the other dataset's name.
+RESULTS = "embeddings-{dataset}-{split}.jsonl"
+DOCUMENT = "embeddings-{dataset}-{split}.md"
 
 
 def variants(config: DatasetConfig) -> tuple[EmbeddingSpec, ...]:
@@ -226,14 +230,17 @@ def main(argv: list[str] | None = None) -> int:
     rows = run(config, args.split, args.resamples)
 
     paths.ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-    results = paths.ARTIFACTS_DIR / RESULTS.format(split=args.split)
+    results = paths.ARTIFACTS_DIR / RESULTS.format(
+        dataset=config.name, split=args.split
+    )
     with results.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row) + "\n")
     text = document(rows, config.name, args.split)
-    (paths.ARTIFACTS_DIR / DOCUMENT.format(split=args.split)).write_text(
-        text, encoding="utf-8"
-    )
+    (
+        paths.ARTIFACTS_DIR
+        / DOCUMENT.format(dataset=config.name, split=args.split)
+    ).write_text(text, encoding="utf-8")
     print(text)
     return 0
 

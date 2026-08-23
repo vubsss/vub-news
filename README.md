@@ -285,7 +285,7 @@ Every source is scored under every correction by:
 python -m pipeline.embed_compare --dataset ebnerd
 ```
 
-Writes `artifacts/embeddings-tune.jsonl` and a markdown table beside it. It chooses nothing: promoting
+Writes `artifacts/embeddings-ebnerd-tune.jsonl` and a markdown table beside it. It chooses nothing: promoting
 a winner into the registry stays a hand edit with a commit message, because it is a decision rather
 than a computation.
 

@@ -795,7 +795,7 @@ EBNERD = DatasetConfig(
         # not obviously the weaker representation, and nothing here had ever
         # measured the assumption that it was.
         #
-        # See artifacts/embeddings-tune.md, regenerate with
+        # See artifacts/embeddings-ebnerd-tune.md, regenerate with
         # `python -m pipeline.embed_compare --dataset ebnerd`.
         postprocess="abtt:1",
     ),

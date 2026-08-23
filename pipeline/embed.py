@@ -555,6 +555,26 @@ def ensure_artifact(config: DatasetConfig) -> None:
         )
 
 
+def encoding_device() -> str:
+    """`cuda` where the machine has one, `cpu` otherwise.
+
+    The submission path encodes whatever the stored artifact does not cover --
+    60,352 of MINDlarge_test's 120,961 articles -- and did it on the CPU even
+    when a GPU was attached, because the device defaulted and nothing passed
+    one. Measured on Ada: 14 texts/s that way against 140 on a GTX 1080 Ti, so
+    a 72-minute step where seven would do.
+
+    torch is imported here rather than at module scope for the same reason
+    `encode` does it: the pipeline mostly loads cached vectors and never needs
+    torch at all.
+    """
+    try:
+        import torch
+    except ImportError:
+        return "cpu"
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
 def for_corpus(
     articles: pd.DataFrame, config: DatasetConfig, directory: Path
 ) -> tuple[Embeddings, dict[str, int]]:
@@ -592,7 +612,12 @@ def for_corpus(
     if missing and spec.kind == GENERATE:
         rows = np.flatnonzero(~matrix.any(axis=1))
         texts = list(document_text(articles).iloc[rows])
-        matrix[rows] = encode(texts, config)
+        device = encoding_device()
+        print(
+            f"    encoding {len(rows):,} articles the artifact does not cover, "
+            f"on {device}"
+        )
+        matrix[rows] = encode(texts, config, device=device)
         encoded = len(rows)
 
     check_unit_norm(matrix, config)

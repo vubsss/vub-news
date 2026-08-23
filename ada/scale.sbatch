@@ -93,6 +93,27 @@ export VUB_NEWS_DATA_ROOT="$STAGE"
 export VUB_NEWS_ROOT="$RESULTS"
 cd "$REPO"
 
+# A dataset that generates its own vectors has no artifact the first time, and
+# `embed` refuses rather than quietly spending eighty CPU-minutes producing one
+# -- which is the right default and the wrong one here, where producing it is
+# the job. So it is produced first, explicitly, and `embed` then finds it.
+#
+# MIND only. EB-NeRD's four vector sources ship with the release and cover it
+# whole, so there is nothing to encode.
+if [ "${DATASET#mind}" != "$DATASET" ]; then
+    GPU_PY="$HOME/envs/vub-news-gpu/bin/python"
+    ENCODER="$([ -x "$GPU_PY" ] && echo "$GPU_PY" || echo "$ENV_PY")"
+    DEVICE="$([ -n "${SLURM_JOB_GPUS:-}" ] && echo cuda || echo cpu)"
+
+    echo "--- the catalogue, through stage 4, so there is something to encode ---"
+    "$ENV_PY" build.py --dataset "$DATASET" --only acquire ingest split preprocess
+
+    echo "--- encoding the active embedding source on $DEVICE ---"
+    /usr/bin/time -f "  encoded in %e s" \
+        "$ENCODER" -m pipeline.encode_variants --dataset "$DATASET" \
+            --variant "e5-base-v2 (query:)" --device "$DEVICE"
+fi
+
 echo "--- build.py --dataset $DATASET ---"
 /usr/bin/time -v "$ENV_PY" build.py --dataset "$DATASET" \
     2> >(tee "$KEEP/last-scale-$DATASET.time" >&2)

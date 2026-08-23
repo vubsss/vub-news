@@ -181,3 +181,27 @@ def test_word2vec_skips_words_it_does_not_know(tmp_path):
     assert found[0].tolist() == [0.5, 0.5]
     assert found[1].tolist() == [1.0, 0.0], "the unknown word is skipped"
     assert not found[2].any(), "a document of unknowns is a zero row"
+
+
+def test_a_dataset_that_has_never_been_embedded_gets_an_index(tmp_path, monkeypatch):
+    """Every new dataset starts with no `article_id_index.parquet`, and the
+    encoder needed one to decide the row order — so nothing could be encoded
+    until something had been encoded. `mind_large` hit it first. The index is
+    the catalogue's own order, so it is written from the catalogue."""
+    monkeypatch.setattr(paths, "ARTIFACTS_DIR", tmp_path / "artifacts")
+    monkeypatch.setattr(paths, "FEATURE_STORE_DIR", tmp_path / "feature_store")
+    MIND.feature_store_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "article_id": ["N7", "N2", "N5"],
+            "title": ["seven", "two", "five"],
+            "abstract": ["", "", ""],
+        }
+    ).to_parquet(MIND.feature_store_dir / "articles.parquet", index=False)
+    assert not (MIND.artifacts_dir / embed.ID_INDEX).exists()
+
+    texts = encode_variants.texts_for(MIND)
+
+    assert texts == ["seven", "two", "five"], "the catalogue's order, unchanged"
+    written = pd.read_parquet(MIND.artifacts_dir / embed.ID_INDEX)
+    assert list(written["article_id"]) == ["N7", "N2", "N5"]

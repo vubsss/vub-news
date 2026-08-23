@@ -46,13 +46,17 @@ def print_plan(datasets: list[DatasetConfig], forced: set[str]) -> None:
     print()
 
 
-def run(datasets: list[DatasetConfig], forced: set[str]) -> None:
+def run(
+    datasets: list[DatasetConfig], forced: set[str], only: set[str] | None = None
+) -> None:
     ran = skipped = not_built = 0
     # One identifier for everything this invocation measures. A build skips
     # the stages it has already done, so the nine costs Phase 9 reports are
     # gathered over several runs and each row has to say which it came from.
     started = timings.now()
     for stage in STAGES:
+        if only and stage.name not in only:
+            continue
         for dataset in datasets:
             state = status(stage, dataset, forced)
             if state == NOT_BUILT:
@@ -102,6 +106,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "or 'all' for every stage",
     )
     parser.add_argument(
+        "--only",
+        nargs="+",
+        default=[],
+        metavar="STAGE",
+        help="run only these stages and stop; the rest keep whatever state "
+        "they were in. For a build that has to be interrupted -- phase 8 "
+        "encodes a catalogue between preprocess and embed",
+    )
+    parser.add_argument(
         "--plan",
         action="store_true",
         help="print the stage table and exit without running anything",
@@ -133,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        run(datasets, forced)
+        run(datasets, forced, set(args.only))
     except (AcquisitionError, EmbeddingError) as error:
         # Something the user has to fix. A traceback would only bury it.
         print(f"\nerror: {error}\n", file=sys.stderr)

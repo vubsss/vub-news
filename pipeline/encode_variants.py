@@ -46,12 +46,25 @@ def texts_for(config: DatasetConfig) -> list[str]:
     one `article_id_index.parquet` and pairs them by position, so a variant
     encoded in any other order would align to the catalogue perfectly and mean
     something else in every row.
+
+    A dataset that has never been embedded has no index yet, which is the state
+    every new one starts in -- `mind_large` reached it first. The index *is* the
+    catalogue's own order (checked on MIND: same ids, same positions), so it is
+    written from the catalogue here rather than being a thing you must already
+    have in order to make it.
     """
-    index = pd.read_parquet(config.artifacts_dir / embed.ID_INDEX)
     articles = pd.read_parquet(
         config.feature_store_dir / "articles.parquet",
         columns=["article_id", "title", "abstract"],
     )
+    stored = config.artifacts_dir / embed.ID_INDEX
+    if not stored.exists():
+        stored.parent.mkdir(parents=True, exist_ok=True)
+        articles[["article_id"]].astype({"article_id": "string"}).to_parquet(
+            stored, index=False
+        )
+        print(f"  wrote {embed.ID_INDEX} from the catalogue, {len(articles):,} rows")
+    index = pd.read_parquet(stored)
     ordered = (
         index[["article_id"]]
         .astype({"article_id": "string"})

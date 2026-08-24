@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pipeline import acquire, embed, paths, predict, sources, submissions
+from pipeline import acquire, ann_index, embed, paths, predict, sources, submissions
 from pipeline.datasets import DATASETS, SubmissionSpec
 
 MIND = DATASETS["mind"]
@@ -107,6 +107,11 @@ def competition(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "RAW_DIR", tmp_path / "raw")
     monkeypatch.setattr(paths, "ARTIFACTS_DIR", tmp_path / "artifacts")
     monkeypatch.setattr(paths, "PREDICTIONS_DIR", tmp_path / "predictions")
+    # The feature store too: `for_corpus` reads its catalogue to check whether
+    # an id still names the same article, so without this a test reads the real
+    # store -- and one that writes a fixture into it overwrites 65,238 articles
+    # with three.
+    monkeypatch.setattr(paths, "FEATURE_STORE_DIR", tmp_path / "feature_store")
 
     test_dir = MIND.raw_dir / "test"
     test_dir.mkdir(parents=True)
@@ -271,6 +276,123 @@ def test_a_cached_matrix_is_only_reused_for_the_corpus_it_was_built_for(
 
     _, rebuilt = embed.for_corpus(articles.iloc[:2], MIND, directory)
     assert rebuilt["cached"] == 0
+
+
+def test_the_submission_index_is_corrected_the_way_the_registry_says(
+    competition, monkeypatch
+):
+    """The geometry correction reaches the submission, not only the evaluation.
+
+    `for_corpus` caches the *source* vectors, so a correction that is never
+    applied on the way into the index leaves the submission ranking under raw
+    e5 geometry -- a mean pairwise cosine of 0.73 -- while every reported
+    number came from the corrected matrix. The file is well-formed, the
+    retriever is named `ann`, and it is not the retriever that was measured.
+    """
+    width = MIND.embeddings.dim
+    monkeypatch.setattr(
+        embed, "read_source",
+        lambda config: (np.array([], dtype=object),
+                        np.zeros((0, width), dtype="float32")),
+    )
+
+    # A large shared offset with a small distinguishing residual: the shape the
+    # correction exists for, and the shape raw transformer output has.
+    def anisotropic(texts, config, **kwargs):
+        rows = np.full((len(texts), width), 1.0, dtype="float32")
+        for i in range(len(texts)):
+            rows[i, i % width] += 0.1
+        return embed.normalise(rows)
+
+    monkeypatch.setattr(embed, "encode", anisotropic)
+
+    assert MIND.embeddings.postprocess == "centre"
+    articles = predict.catalogue(MIND)
+    built = ann_index.ranker(articles, MIND, competition / "work")
+
+    cached, _ = embed.for_corpus(articles, MIND, competition / "work" / embed.EMBED_DIR)
+    assert embed.anisotropy(cached.vectors) > 0.9, "the cache holds source vectors"
+    assert np.allclose(
+        built.embeddings.vectors,
+        embed.postprocess(cached.vectors, MIND.embeddings.postprocess),
+    )
+    assert embed.anisotropy(built.embeddings.vectors) < embed.anisotropy(cached.vectors)
+
+
+def test_an_artifact_row_is_not_reused_when_the_id_names_another_article(
+    competition, monkeypatch
+):
+    """MIND's ids are per-release local names, not stable keys.
+
+    Of the 60,609 ids MINDsmall and MINDlarge_test share, 60,608 are different
+    articles -- so aligning the artifact onto the competition catalogue by id
+    alone gave the submission 50.11% of a catalogue holding some unrelated
+    article's vector. Well-formed, unit length, and not this article's.
+    """
+    width = MIND.embeddings.dim
+
+    # The feature store the artifact was encoded from: same ids as the
+    # competition's catalogue, entirely different articles under them.
+    store = MIND.feature_store_dir
+    store.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({
+        "article_id": pd.Series(["N1", "N2", "N3"], dtype="string"),
+        "title": ["a totally different article", "and another", "and a third"],
+        "abstract": ["", "", ""],
+    }).to_parquet(store / "articles.parquet", index=False)
+
+    monkeypatch.setattr(
+        embed, "read_source",
+        lambda config: (np.array(["N1", "N2", "N3"], dtype=object),
+                        np.tile(np.eye(1, width, dtype="float32"), (3, 1))),
+    )
+    encoded = []
+
+    def fake_encode(texts, config, **kwargs):
+        encoded.extend(texts)
+        return np.tile(np.eye(1, width, 1, dtype="float32"), (len(texts), 1))
+
+    monkeypatch.setattr(embed, "encode", fake_encode)
+
+    articles = predict.catalogue(MIND)
+    vectors, report = embed.for_corpus(articles, MIND, competition / "work")
+
+    assert report["stale"] == 3, "every id names a different article here"
+    assert report["from_artifact"] == 0, "so no artifact row may be reused"
+    assert report["encoded"] == 3, "and all three are encoded from their own text"
+    assert len(encoded) == 3
+    # The artifact's vector points along axis 0; what was encoded here, axis 1.
+    assert not vectors.vectors[:, 0].any()
+
+
+def test_an_artifact_row_is_reused_when_the_text_agrees(
+    competition, monkeypatch
+):
+    """The other half of the rule: EB-NeRD's ids *are* stable, and a corpus
+    that agrees with the artifact must still cost nothing to embed."""
+    width = MIND.embeddings.dim
+    articles = predict.catalogue(MIND)
+
+    store = MIND.feature_store_dir
+    store.mkdir(parents=True, exist_ok=True)
+    articles[["article_id", "title", "abstract"]].to_parquet(
+        store / "articles.parquet", index=False
+    )
+
+    monkeypatch.setattr(
+        embed, "read_source",
+        lambda config: (articles["article_id"].to_numpy(dtype=object),
+                        np.tile(np.eye(1, width, dtype="float32"), (len(articles), 1))),
+    )
+    monkeypatch.setattr(
+        embed, "encode",
+        lambda texts, config, **kwargs: pytest.fail("re-encoded agreeing text"),
+    )
+
+    _, report = embed.for_corpus(articles, MIND, competition / "work")
+    assert report["stale"] == 0
+    assert report["from_artifact"] == len(articles)
+    assert report["encoded"] == 0
 
 
 # --- EB-NeRD: the same five seams, for the competition whose test set ships

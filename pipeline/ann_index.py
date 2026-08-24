@@ -607,7 +607,20 @@ def ranker(
     workdir: Path,
     history_k: int = retrieval.HISTORY_K,
 ) -> Ranker:
-    """Vectors for `articles`, cached under `workdir`, in a flat index."""
+    """Vectors for `articles`, corrected, cached under `workdir`, in a flat index.
+
+    The correction is applied here rather than inside `for_corpus` because the
+    cache holds the source vectors -- `embed.source_identity` says so, and a
+    matrix cached under one correction is the right matrix under another. It is
+    fitted on the competition's own catalogue, which is the corpus these scores
+    are cosines over.
+
+    Without it the submission ranks under a geometry no reported number was
+    measured on. `embed.build` corrects the feature store's matrix, so every
+    offline number is the corrected retriever's, and MIND's raw e5 vectors have
+    a mean pairwise cosine of 0.73 -- the discriminative signal rides as a small
+    residual on a shared offset, which is exactly what the correction removes.
+    """
     embeddings, report = embed.for_corpus(articles, config, workdir / embed.EMBED_DIR)
     if report["cached"]:
         print(f"    {report['articles']:,} article vectors loaded from {workdir}")
@@ -617,6 +630,22 @@ def ranker(
             f"artifact, {report['encoded']:,} encoded here, "
             f"{report['missing']:,} left at zero"
         )
+        if report["stale"]:
+            print(
+                f"    {report['stale']:,} matched an artifact row by id and "
+                f"were rejected on the text: the id names a different article "
+                f"in this corpus than in the one the artifact was built from"
+            )
+    before = embed.anisotropy(embeddings.vectors)
+    embeddings = embed.Embeddings(
+        vectors=embed.postprocess(embeddings.vectors, config.embeddings.postprocess),
+        article_ids=embeddings.article_ids,
+    )
+    print(
+        f"    anisotropy {before:.4f} -> "
+        f"{embed.anisotropy(embeddings.vectors):.4f} under "
+        f"{config.embeddings.postprocess}"
+    )
     return Ranker(
         index=build(embeddings),
         embeddings=embeddings,

@@ -239,6 +239,49 @@ def align(
     return matrix, missing
 
 
+def stale_rows(config: DatasetConfig, articles: pd.DataFrame) -> np.ndarray:
+    """Corpus rows whose text is not the text their artifact vector came from.
+
+    `align` pairs the artifact to a corpus by `article_id`, which is only a
+    valid key while an id means the same article on both sides. Across MIND
+    releases it does not: of the 60,609 ids MINDsmall and MINDlarge_test share,
+    **60,608 are different articles**, so aligning by id alone gave the
+    submission a catalogue half of which held some unrelated article's vector.
+    An id is a per-release local name in MIND and a stable one in EB-NeRD, and
+    nothing about either says which it is.
+
+    So the id is checked against the thing that actually has to be true for a
+    vector to be reusable -- that it was built from this text. Where the two
+    disagree the row is dropped rather than trusted, and `for_corpus` encodes
+    it again if the dataset can. A zero row is never retrieved; a confidently
+    wrong one is, which is the failure this exists against.
+
+    Compared against the feature store's catalogue, because that is what the
+    artifact was encoded from -- `encode_variants.texts_for` reads exactly this
+    file, through this same `document_text`. An id the feature store does not
+    hold has nothing to contradict it and is left alone: either the artifact
+    has no row for it either, or the artifact ships with the release and covers
+    articles the feature store never saw, which is EB-NeRD's case.
+    """
+    catalogue = config.feature_store_dir / "articles.parquet"
+    if not catalogue.exists():
+        # Nothing to check against. The artifact is generated *from* this file,
+        # so in practice it is here whenever there is an artifact to reuse.
+        return np.zeros(len(articles), dtype=bool)
+
+    known = pd.read_parquet(catalogue, columns=["article_id", "title", "abstract"])
+    was = dict(zip(known["article_id"].astype("string"), document_text(known)))
+    return np.array(
+        [
+            was.get(article_id, text) != text
+            for article_id, text in zip(
+                articles["article_id"].astype("string"), document_text(articles)
+            )
+        ],
+        dtype=bool,
+    )
+
+
 def normalise(matrix: np.ndarray) -> np.ndarray:
     """Scale every row to unit length, so an inner product is a cosine.
 
@@ -608,6 +651,12 @@ def for_corpus(
     if spec.normalise:
         matrix = normalise(matrix)
 
+    # What `align` matched by id but the text says is a different article. See
+    # stale_rows: across MIND releases that is every shared id but one.
+    stale = stale_rows(config, articles) & matrix.any(axis=1)
+    matrix[stale] = 0
+    missing += int(stale.sum())
+
     encoded = 0
     if missing and spec.kind == GENERATE:
         rows = np.flatnonzero(~matrix.any(axis=1))
@@ -630,11 +679,23 @@ def for_corpus(
         "articles": len(corpus_ids),
         "cached": 0,
         "encoded": encoded,
+        # Matched by id and rejected on the text. Reported rather than folded
+        # into `missing`, because it is the one number that says the corpus and
+        # the artifact disagree about what an id names.
+        "stale": int(stale.sum()),
         # What the artifact did cover, and — for a dataset that encodes — what
         # it did not and had to be made here.
         "from_artifact": len(corpus_ids) - missing,
         "missing": missing - encoded,
     }
+
+
+# Bumped whenever the rule for *which* artifact rows may be reused changes, so
+# a matrix cached under the old rule is rebuilt rather than silently reused. 2
+# is the rule that checks an id's text before trusting its vector; 1 trusted
+# the id alone, and every MIND submission built under it holds a catalogue half
+# of which is some other article's vector.
+REUSE_RULE = 2
 
 
 def source_identity(spec: EmbeddingSpec) -> dict[str, object]:
@@ -643,8 +704,13 @@ def source_identity(spec: EmbeddingSpec) -> dict[str, object]:
     Not `postprocess`: the correction is applied downstream of this cache, on
     the way into the index, so a matrix cached under one correction is the
     right matrix under another.
+
+    `reuse_rule` is not about the spec at all -- it is about this module. It is
+    here because the cache is keyed on this dict, and a corpus matrix built
+    when the reuse rule was wrong is wrong in a way no field above can see.
     """
     return {
+        "reuse_rule": REUSE_RULE,
         "model": spec.model,
         "dim": spec.dim,
         "artifact": spec.artifact,

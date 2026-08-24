@@ -24,6 +24,7 @@ SubmissionSpec field. Nothing here reads a dataset name.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import csv
 import time
 import zipfile
@@ -37,7 +38,13 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from pipeline import acquire, evaluate, paths, preprocess, retrieval, weighting
-from pipeline.datasets import DATASETS, DEFAULT_DATASETS, DatasetConfig, TableSource
+from pipeline.datasets import (
+    DATASETS,
+    DEFAULT_DATASETS,
+    DatasetConfig,
+    TableSource,
+    WeightingSpec,
+)
 
 # The retriever a submission is generated with unless one is named. Ticket 11
 # separated the two on MIND's validation split by disjoint bootstrap intervals
@@ -330,7 +337,9 @@ def write(
     rank_with = module.ranker(articles, config, workdir, history_k)
 
     destination = (
-        paths.PREDICTIONS_DIR / config.name / f"{retriever}-{spec.filename}"
+        paths.PREDICTIONS_DIR
+        / config.name
+        / f"{label_for(config, retriever, history_k)}-{spec.filename}"
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     partial = destination.with_name(destination.name + ".part")
@@ -398,7 +407,33 @@ def _check_alignment(chunk: pd.DataFrame, ranked: pd.DataFrame) -> None:
         )
 
 
-def bundle_for(config: DatasetConfig, retriever: str) -> Path:
+def label_for(
+    config: DatasetConfig, retriever: str, history_k: int = retrieval.HISTORY_K
+) -> str:
+    """What to call this submission, given how it was actually produced.
+
+    Anything that differs from the registry joins the name: the weighting
+    scheme, and the history window. A file that ranked under a different model
+    from the configured one must not be able to pass for the configured one on
+    disk -- that is the failure class the guards in this pipeline exist
+    against, and a filename is the cheapest place to keep the distinction.
+
+    `ebnerd_submission-bm25-uniform-k10.zip` is a baseline produced knowingly:
+    the configured model is engagement-weighted at k=80, which repeats each
+    clicked title up to MAX_REPEAT times and projects to about thirty hours
+    over 13.5M impressions.
+    """
+    parts = [retriever]
+    if config.weighting.scheme != DATASETS[config.name].weighting.scheme:
+        parts.append(config.weighting.scheme)
+    if history_k != retrieval.HISTORY_K:
+        parts.append(f"k{history_k}")
+    return "-".join(parts)
+
+
+def bundle_for(
+    config: DatasetConfig, retriever: str, history_k: int = retrieval.HISTORY_K
+) -> Path:
     """Where this retriever's submission zip goes.
 
     The retriever is in the *archive* name and never in the prediction file
@@ -408,17 +443,22 @@ def bundle_for(config: DatasetConfig, retriever: str) -> Path:
     would silently be the submission.
     """
     stem = Path(config.submission.bundle).stem
-    return paths.PREDICTIONS_DIR / f"{stem}-{retriever}.zip"
+    return paths.PREDICTIONS_DIR / f"{stem}-{label_for(config, retriever, history_k)}.zip"
 
 
-def bundle(prediction: Path, config: DatasetConfig, retriever: str) -> Path:
+def bundle(
+    prediction: Path,
+    config: DatasetConfig,
+    retriever: str,
+    history_k: int = retrieval.HISTORY_K,
+) -> Path:
     """Zip the prediction file under the name the leaderboard looks for.
 
     Written with `arcname` so the archive holds a bare file: CodaBench rejects
     a submission whose prediction file sits inside a directory, and a zip built
     from a path keeps the path.
     """
-    archive = bundle_for(config, retriever)
+    archive = bundle_for(config, retriever, history_k)
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zipped:
         zipped.write(prediction, arcname=config.submission.filename)
     return archive
@@ -444,14 +484,14 @@ def submit(
     force: bool = False,
 ) -> Path:
     spec = config.submission
-    archive = bundle_for(config, retriever)
+    archive = bundle_for(config, retriever, history_k)
     if archive.exists() and not force:
         print(f"    {archive} is already built")
         return archive
 
     acquire.ensure(config, spec.archives, spec.expected_files, spec.token_env)
     prediction, report = write(config, retriever, history_k, chunk_size)
-    archive = bundle(prediction, config, retriever)
+    archive = bundle(prediction, config, retriever, history_k)
 
     total = report["impressions"]
     print(
@@ -491,6 +531,14 @@ def main(argv: list[str] | None = None) -> int:
         help=f"which retriever ranks the candidates (default {DEFAULT_RETRIEVER})",
     )
     parser.add_argument(
+        "--weighting",
+        choices=weighting.SCHEMES,
+        help="rank under this click weighting instead of the registry's. The "
+        "configured scheme is what every reported number was measured under, "
+        "so a submission built this way is a different model, and it says so "
+        "in its filename",
+    )
+    parser.add_argument(
         "--history-k",
         type=int,
         default=retrieval.HISTORY_K,
@@ -520,6 +568,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             continue
         print(f"  {name}")
+        if args.weighting:
+            config = dataclasses.replace(
+                config, weighting=WeightingSpec(scheme=args.weighting)
+            )
+            print(
+                f"  ranking under {args.weighting!r} weighting, not the "
+                f"registry's {DATASETS[name].weighting.scheme!r} — a different "
+                f"model from the one every reported number was measured under"
+            )
         submit(config, args.retriever, args.history_k, args.chunk, args.force)
     return 0
 

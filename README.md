@@ -452,12 +452,16 @@ This is **not** the local evaluation task, and the difference decides most of th
   So the retriever is built over the competition's articles, not the pipeline's, and a user this
   project has never seen is not a special case — the history the ranking is built from arrives with
   the competition's files, on the impression row for MIND and in that table for EB-NeRD.
-- **The embedding artifact covers one of the two catalogues.** 60,609 of MIND's 120,961 competition
-  articles have a vector in the artifact ticket 7 generated; the other 60,352 are encoded locally on
-  CPU the first time this runs and cached under `artifacts/mind/predict/`. Left at zero instead, the
-  semantic retriever would score half the catalogue 0 and submit the candidate file's own order
-  under its name. EB-NeRD needs none of that: the vectors that ship with the dataset cover all
-  125,541 of its competition articles exactly, so nothing is encoded and no row is left at zero.
+- **A vector is reused on its text, not on its article id.** 60,609 of MIND's 120,961 competition
+  articles carry an id the artifact also holds — and **60,608 of them are a different article**.
+  MIND's ids are per-release local names, so aligning by id alone gave the submission a catalogue
+  half of which held some unrelated article's vector: well-formed, unit length, and wrong, which
+  cost two void leaderboard uploads before it was found. `embed.stale_rows` now compares the
+  corpus's `document_text` against the feature-store catalogue the artifact was encoded from, and
+  `for_corpus` re-encodes whatever disagrees — **120,960 of 120,961 for MIND**, on a GPU where one
+  is available. EB-NeRD's ids *are* stable: all 20,738 shared ids agree, the shipped vectors cover
+  all 125,541 of its competition articles, and nothing is encoded or left at zero. Nothing announces
+  which kind of id a dataset has, so the text is checked rather than assumed.
 
 Both impression files are streamed in chunks of 100,000 — one user vector per impression at 384
 float32 is 3.6 GB for MIND before a single candidate is scored — and written in input order, which
@@ -519,12 +523,16 @@ The competition scores the same four metrics the harness does, so the two sit si
 
 The last run's own account of what it ranked, which is where a gap would be explained from:
 
-- 2,370,727 impressions, 93,115,001 candidates, ranked in 210 s after a 24-minute one-off encode of
-  the half of the catalogue the artifact did not cover.
+- 2,370,727 impressions, 93,115,001 candidates, ranked in 423 s after encoding 120,960 of the
+  120,961 articles — everything the text check refused to take from the artifact — in ~9 minutes on
+  a GPU. 17m48s end to end.
+- 60,608 rows matched an artifact row by id and were rejected on the text.
 - 29,108 impressions (1.23%) carry no click history and 29,109 (1.23%) scored flat — so all but one
   flat ranking is a genuinely cold user rather than a catalogue miss, and 98.77% of the leaderboard
   score is the retriever's own work.
 - 0 articles left without a vector.
+- anisotropy 0.7262 -> -0.0000 under `centre`, applied on the way into the index. The submission
+  used to skip the correction the harness applies; it does not now.
 
 Submitting: upload `predictions/mind_submission.zip` under **Participate → Submit**, and save the
 resulting leaderboard entry to `screenshots/mind-leaderboard.png` for the design note.

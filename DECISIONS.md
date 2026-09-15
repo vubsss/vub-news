@@ -317,3 +317,28 @@ quoted *at* an SLA, so a variant that does not meet it has no cost at that SLA.
 The arithmetic travels with the number as a string for the same reason every other figure in this
 project traces to a row: `1000 / qps = core-seconds / 3600 x $/core-hour`, with the core price and
 its source named in the markdown, so a reader can substitute their own and get their own answer.
+
+## 2026-09-15 — `test` is scored once, and "once" is a file rather than a promise
+
+`pipeline.final` writes `artifacts/test-scored.json` — the date, the invocation, the commit and
+which scoring this is — and refuses to run again. Under `artifacts/` and not `.checkpoints/`
+deliberately: a checkpoint is something the rebuild's `--force` may clear, and this must survive
+that.
+
+`--force` **appends** to the record rather than replacing it. If the second run could overwrite
+the first, the evidence that there was a first would be gone, which is precisely the state the
+record exists to prevent. `test-once-<dataset>.md` then says "run **2**" in its opening paragraph,
+so the next reader is told rather than left to find the file.
+
+The engineering columns are copied from the `validation` rows and marked `measured on validation`.
+Bytes and milliseconds are properties of the model, not of the split it was scored on, so a second
+measurement produces a second number for one fact — and then there are two, and somebody chooses.
+The functional columns are the test run's own, which is what `test` is for.
+
+## 2026-09-15 — The ablation reads six frames, and all six are ensured before anything is scored
+
+`run_arms` fits on `train`, stops on `tune` and scores on the named split, and Q9's leaky arms read
+their own file of each — so a `test` run touches six materialised frames, of which the rebuild
+builds three. Discovered the way these things are: a run that built only the causal `test` frame
+scored the split, ran most of the nineteen arms, and failed on the leaky one, at which point the
+refusal above would have blocked the retry. `final.build_frame` checks all six first.

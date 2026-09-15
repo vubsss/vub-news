@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pipeline import bm25_index, counters, embed, features, nrms, paths
+from pipeline import bm25_index, counters, embed, features, nrms, paths, retrieval
 from pipeline.datasets import DATASETS, NrmsSpec, RerankSpec
 
 MIND = DATASETS["mind"]
@@ -30,7 +30,13 @@ ARTICLES = (
 
 # Small enough to train in a moment, and the same model either way.
 SMALL_NRMS = NrmsSpec(
-    history_length=4,
+    # The registry's window, not a smaller one. `NrmsSpec.history_length`
+    # defaults to `retrieval.HISTORY_K`, and everything that scores NRMS
+    # through the harness -- `evaluate`, and so `final` -- passes that default
+    # and is refused by a checkpoint fitted at any other. Shrinking it here
+    # would make the fixture disagree with the registry about a number the
+    # checkpoint carries in its weights.
+    history_length=retrieval.HISTORY_K,
     heads=2,
     head_dim=4,
     attention_dim=8,
@@ -80,6 +86,20 @@ def impressions_of(count=16):
                 ["a2", "a3", "a5"],
                 [1, 0, 0] if i % 2 == 0 else [0, 0, 1],
                 "validation",
+            )
+        )
+    # After validation in time, so a causal read at a validation moment cannot
+    # see them: adding a held-out split must not move any number measured on
+    # the splits before it.
+    for i in range(4):
+        rows.append(
+            (
+                f"s{i}",
+                f"u{i % 3}",
+                count + 16 + i,
+                ["a1", "a4", "a5"],
+                [1, 0, 0] if i % 2 == 0 else [0, 1, 0],
+                "test",
             )
         )
     return pd.DataFrame(

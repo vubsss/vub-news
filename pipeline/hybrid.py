@@ -175,17 +175,21 @@ def rank_candidates(
     history: pd.DataFrame,
     history_k: int = retrieval.HISTORY_K,
     pooling: str = retrieval.POOLING,
+    stores: dict | None = None,
 ) -> pd.DataFrame:
     """Score each impression's own candidates. The harness's only entry here.
 
     The same signature bm25_index and ann_index expose, which is the whole of
     what the harness knows about any retriever — so this one is an entry in
     `evaluate.RETRIEVERS` and nothing downstream learns it exists.
+
+    `stores` is handed to both parents unchanged. Each reads the keys it needs
+    and neither needs to know the other was given anything.
     """
     return fuse(
         {
             name: module.rank_candidates(
-                config, behaviors, history, history_k, pooling
+                config, behaviors, history, history_k, pooling, stores
             )
             for name, module in (
                 (PARENTS[0], bm25_index),

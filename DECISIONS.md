@@ -286,3 +286,34 @@ Three of the five retrievers have no device to score on. `predict.build_ranker` 
 signature and passes `device` only where it means something, rather than widening five interfaces
 for two. The failure it avoids is a `--device cuda` that BM25 accepts and ignores, which reads as
 "honoured" in a log and in a design note.
+
+## 2026-09-15 — The serving benchmark found that a request was re-reading its index
+
+`test_the_request_path_opens_no_file` is the kind of test that either passes trivially or finds
+something serious. It found something serious: every single-user request was opening nine files —
+the BM25 index's five, the embedding matrix and its id index, the article catalogue — because
+`features.frame_for` gets its retriever scores through each module's `rank_candidates`, and that
+function loads its own index inside the call.
+
+That is the right design for the frame builder, which is handed 200,000 impressions at a time and
+amortises the load across all of them. For one request it is the whole cost. And it would not have
+shown up as a bug: the load happens inside the `features` stage's timer, so the benchmark would
+have reported it as feature-lookup latency and the note would have concluded that the feature
+stage is the bottleneck and that a faster index would not help.
+
+The fix is one optional `stores` dict on `rank_candidates`, the same argument on all three
+retrievers so the harness's single signature stays single, each reading the keys it needs.
+`pipeline.serve` opens the index once and passes it in; the scoring arithmetic is untouched, which
+`test_the_served_scorers_agree_with_the_harness` asserts score for score. The alternative — a
+serving-only scoring function — would have been a second implementation of a published number.
+
+## 2026-09-15 — A variant that misses the SLA is not given a price
+
+`serve.cost_per_1000` returns `None` for the dollar figure when the variant's p99 exceeds the
+budget, and says so in the arithmetic string. A cheap row beside a compliant one, with nothing
+saying the cheap one is not allowed, is the shape of a table that gets misread — and the cost is
+quoted *at* an SLA, so a variant that does not meet it has no cost at that SLA.
+
+The arithmetic travels with the number as a string for the same reason every other figure in this
+project traces to a row: `1000 / qps = core-seconds / 3600 x $/core-hour`, with the core price and
+its source named in the markdown, so a reader can substitute their own and get their own answer.

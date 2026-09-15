@@ -389,6 +389,12 @@ def bench_serve(config: DatasetConfig, split: str) -> list[dict]:
     `history_k`, so the difference between the two rows is exactly the
     history-dependent cost -- which is what phase 4's +0.018 AUC was bought
     with, priced in milliseconds.
+
+    Not to be confused with `pipeline.serve`, which is the A2 module of a
+    similar name. This one measures **stage one** in batch and recovers the
+    marginal cost by regression; that one issues single requests through the
+    **whole two-stage path** and reports their percentiles directly. The two
+    answer different questions and neither number is the other.
     """
     behaviors = pd.read_parquet(config.feature_store_dir / "behaviors.parquet")
     scored = behaviors[behaviors["split"] == split]

@@ -541,6 +541,7 @@ def rank_candidates(
     history: pd.DataFrame,
     history_k: int = retrieval.HISTORY_K,
     pooling: str = retrieval.POOLING,
+    stores: dict | None = None,
 ) -> pd.DataFrame:
     """Score each impression's own candidates. The harness's only entry here.
 
@@ -548,9 +549,22 @@ def rank_candidates(
     lets the harness score both retrievers without knowing which it holds — and
     what stops a sweep handing the two of them different windows or different
     poolings while reporting one cell.
+
+    `stores` is for the serving benchmark, which issues one request at a time:
+    reading the catalogue and the index inside the call is right for a batch
+    and is the entire cost of a single request. The three retrievers take the
+    same argument and each reads the keys it needs, so the harness's one
+    signature stays one signature. Passed in rather than given a second scoring
+    function, so a served request and a measured batch are the same arithmetic
+    -- `test_the_served_scorers_agree_with_the_harness`.
     """
-    articles = pd.read_parquet(config.feature_store_dir / "articles.parquet")
-    index = load(config.artifacts_dir / "bm25")
+    opened = stores or {}
+    articles = opened.get("articles")
+    if articles is None:
+        articles = pd.read_parquet(config.feature_store_dir / "articles.parquet")
+    index = opened.get("bm25_index")
+    if index is None:
+        index = load(config.artifacts_dir / "bm25")
 
     wanted = set(behaviors["impression_id"])
     clicks = history[history["impression_id"].isin(wanted)]

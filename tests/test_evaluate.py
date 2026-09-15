@@ -12,7 +12,17 @@ import pytest
 
 import dataclasses
 
-from pipeline import ann_index, bm25_index, evaluate, ingest, nrms, paths
+from pipeline import (
+    ann_index,
+    bm25_index,
+    counters,
+    evaluate,
+    features,
+    ingest,
+    nrms,
+    paths,
+    rerank,
+)
 from pipeline.datasets import DATASETS
 
 MIND = DATASETS["mind"]
@@ -44,6 +54,9 @@ def behaviours(rows, split="validation", day="2019-11-14"):
             "user_id": pd.Series([f"u-{r[0]}" for r in rows], dtype="string"),
             "source": pd.Series(["train"] * len(rows), dtype="string"),
             "impression_time": pd.to_datetime([day] * len(rows)),
+            # MIND ships no sessions, and the feature store carries the column
+            # as null rather than leaving it out — so the fixtures do too.
+            "session_id": pd.Series([None] * len(rows), dtype="string"),
             "candidate_ids": [list(r[1]) for r in rows],
             "labels": [list(r[2]) for r in rows],
             "split": pd.Series([split] * len(rows), dtype="string"),
@@ -622,21 +635,18 @@ def _store_of(store):
             "category": pd.Series(["sports", "finance"], dtype="string"),
             "subcategory": pd.Series(["hockey", "markets"], dtype="string"),
             "lexical_text": pd.Series(["sharks win", "markets fall"], dtype="string"),
+            "published_time": pd.Series([pd.NaT] * 2, dtype="datetime64[us]"),
         }
     ).to_parquet(store / "articles.parquet", index=False)
     train = behaviours(
-        [
-            ("t1", ["a1", "a2"], [1, 0]),
-            ("t2", ["a1", "a2"], [0, 1]),
-            ("t3", ["a1", "a2"], [1, 0]),
-            ("t4", ["a1", "a2"], [0, 1]),
-        ],
+        [(f"t{i}", ["a1", "a2"], [1, 0] if i % 2 else [0, 1]) for i in range(1, 9)],
         split="train",
         day="2019-11-13",
     )
-    # Four distinct moments, so the stacking boundary has somewhere to fall.
+    # Eight distinct moments, so the stacking boundary has somewhere to fall
+    # and both halves hold rows for the two models to be fitted on.
     train["impression_time"] = pd.to_datetime(
-        [f"2019-11-13 0{hour}:00:00" for hour in range(1, 5)]
+        [f"2019-11-13 0{hour}:00:00" for hour in range(1, 9)]
     )
     pd.concat(
         [
@@ -647,7 +657,7 @@ def _store_of(store):
         ]
     ).to_parquet(store / "behaviors.parquet", index=False)
     histories(
-        [("t1", 1), ("t2", 1), ("t3", 1), ("t4", 1), ("n1", 1), ("d1", 1), ("d2", 1)]
+        [(f"t{i}", 1) for i in range(1, 9)] + [("n1", 1), ("d1", 1), ("d2", 1)]
     ).to_parquet(store / "history.parquet", index=False)
 
     articles = pd.read_parquet(store / "articles.parquet")
@@ -656,10 +666,25 @@ def _store_of(store):
         vectors=np.array([[1.0, 0.0], [0.0, 1.0]], dtype="float32"),
         article_ids=np.array(["a1", "a2"], dtype=object),
     ).save(embed.output_dir(MIND))
-    # The fourth retriever loads a checkpoint rather than an index, so the
-    # store is not complete until one has been fitted against it.
+    # The last two retrievers load a checkpoint rather than an index, so the
+    # store is not complete until both have been fitted against it — which
+    # needs the counters and the feature frames underneath them. Fitted at a
+    # shrunken size: the fields that shrink are not in either variant name, so
+    # the files land exactly where the registry's spec says to look.
+    behaviors = pd.read_parquet(store / "behaviors.parquet")
+    counters.build(behaviors).save(MIND.artifacts_dir / counters.DIRECTORY)
+    for split in features.SPLITS:
+        features.build(MIND, split)
+
     model, _ = nrms.train(MIND, dataclasses.replace(MIND.nrms, epochs=1))
     nrms.save(model, MIND.nrms, 2, nrms.checkpoint_path(MIND))
+    booster, _ = rerank.train(
+        MIND,
+        dataclasses.replace(
+            MIND.rerank, rounds=4, min_data_in_leaf=1, early_stopping=2
+        ),
+    )
+    rerank.save(booster, MIND, MIND.rerank)
 
 
 def test_the_command_scores_one_dataset_retriever_and_split(store, capsys):

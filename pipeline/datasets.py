@@ -433,6 +433,57 @@ class NrmsSpec:
 
 
 @dataclass(frozen=True)
+class RerankSpec:
+    """The LightGBM re-ranker: what it learns from and how it is grown.
+
+    Every field here is an axis ticket 06 sweeps on `tune`, so the entry in the
+    registry is the cell that won and the rows in `artifacts/tradeoffs.md` are
+    the ones that lost. Swept one at a time from these defaults rather than as
+    a product: the grid is a full training run per cell.
+
+    `objective` is `binary` or `lambdarank`. AUC is the headline and the
+    leaderboard metric and is what logloss optimises; `lambdarank` targets
+    nDCG, grouped by impression. Both are reported on every metric, so the note
+    can say which objective wins which rather than assume.
+
+    `groups` are the availability tiers of `features.FEATURE_GROUPS` this arm
+    reads. Dropping one is a *projection* -- the column never leaves the disk
+    -- rather than a column of zeros a tree could still split on.
+
+    `window` picks the counter columns: one of `counters.WINDOWS`, or `all` to
+    keep every suffix. `nrms` adds the baseline's score as a feature, which is
+    the ablation the stacking split makes free. `causal` chooses between the
+    strictly-before frame and Q9's leaky one -- the same model, one flag, which
+    is what makes that pair a measurement of leakage rather than of two models.
+
+    `top_k` is the literal stage-one cut: candidates outside the retriever's
+    top K are ranked last instead of scored. `None` is the headline setting, in
+    which the re-ranker scores every logged candidate; a number is the
+    ablation row that says what a hard cut costs.
+    """
+
+    objective: str = "binary"
+    leaves: int = 31
+    # A ceiling; the count is chosen by early stopping on tune.
+    rounds: int = 500
+    learning_rate: float = 0.05
+    min_data_in_leaf: int = 100
+    early_stopping: int = 25
+    window: str = "24h"
+    groups: tuple[str, ...] = ("content", "history", "exposure", "clicked")
+    nrms: bool = True
+    causal: bool = True
+    top_k: int | None = None
+    # Which feature frame to read: the two precisions are two files.
+    precision: str = "float32"
+    # Threads at prediction. 0 is LightGBM's own default (every core); ticket
+    # 09 needs the single-core number too, and extrapolating it from a
+    # multi-core run is exactly the arithmetic a cost estimate should not do.
+    threads: int = 0
+    seed: int = 0
+
+
+@dataclass(frozen=True)
 class SubmissionSpec:
     """What the competition hands over, and what it will accept back.
 
@@ -505,6 +556,9 @@ class DatasetConfig:
     # that chooses the history length and the head count runs on tune, and the
     # winning cell is written here beside the row that chose it.
     nrms: NrmsSpec = NrmsSpec()
+    # The re-ranker's shape. Defaulted for both datasets until the tune sweep
+    # names a winner, which is then written here beside the row that chose it.
+    rerank: RerankSpec = RerankSpec()
 
     @property
     def raw_dir(self) -> Path:

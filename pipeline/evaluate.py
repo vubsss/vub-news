@@ -39,7 +39,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-from pipeline import ann_index, bm25_index, hybrid, ingest, nrms, paths, retrieval
+from pipeline import ann_index, bm25_index, hybrid, ingest, nrms, paths, rerank, retrieval
 from pipeline.datasets import DATASETS, DatasetConfig
 
 # The retrievers the harness can score. The values are modules, each exposing
@@ -51,6 +51,7 @@ RETRIEVERS = {
     "ann": ann_index,
     "hybrid": hybrid,
     "nrms": nrms,
+    "rerank": rerank,
 }
 
 # The stage-one retrievers: the ones that rank the whole corpus and build their

@@ -24,6 +24,7 @@ from pipeline import (
     paths,
     predict,
     preprocess,
+    rerank,
     split,
 )
 from pipeline.datasets import DatasetConfig
@@ -67,6 +68,11 @@ STAGES = (
         "nrms",
         "NRMS-DocVec, the reproduced baseline, on the earlier half of train",
         nrms.run,
+    ),
+    Stage(
+        "rerank",
+        "the LightGBM re-ranker, on the later half of train",
+        rerank.run,
     ),
     Stage("evaluate", "ranking metrics per retriever", evaluate.run),
     Stage("predict", "rank the competition's test impressions", predict.run),

@@ -364,6 +364,13 @@ def test_the_leaky_arm_sees_what_the_causal_one_cannot(store):
     for column in ("exposures_cumulative", "clicks_cumulative"):
         assert (leaky[column] >= causal[column]).all()
         assert (leaky[column] > causal[column]).any()
+    # A sliding window is not a superset of the causal one and is not meant to
+    # be: the leaky hour is the hour *after* `t`, which is where the
+    # impression's own outcome sits. i3 at 12:00 clicks a1, and only the leaky
+    # arm can see that click.
+    a1 = leaky["article_id"] == "a1"
+    assert causal.loc[a1, "clicks_1h"].sum() == 0
+    assert leaky.loc[a1, "clicks_1h"].sum() >= 1
     # a5 is first shown by this very impression, so only the leaky arm has a
     # freshness for it at all.
     a5 = leaky["article_id"] == "a5"

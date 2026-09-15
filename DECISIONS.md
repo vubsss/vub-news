@@ -179,3 +179,36 @@ ebnerd-benchmark figure has to be read off the paper; a number typed from memory
 note is worse than a stated gap, because it looks like a measurement. Filling it in is one line
 and the renderer already prints the gap either way — including when this reproduction lands below
 its source, which is a finding rather than something to leave out.
+
+## 2026-09-15 — The re-ranker trains from the stored frame and *computes* it to serve
+
+Two paths on purpose, and they are the two different questions. Training reads the materialised
+frame a parquet row group at a time with the arm's column projection: it is the largest read in
+the project, and the projection is the whole engineering claim of the tier structure — an arm that
+drops a tier does not pay to read it. `projection_rows` measures that by reading the same rows
+twice rather than asserting it, because parquet's column layout is what makes it true.
+
+Scoring goes through `features.frame_for` per chunk, which is what the submission does and what a
+server would do — so the per-impression milliseconds on the ledger row are the served number and
+not a read off a table somebody prepared earlier. A `rank_candidates` that loaded the stored split
+would have been faster and would have measured nothing.
+
+## 2026-09-15 — `rerank.ranker` refuses rather than assembling the wrong period's features
+
+`predict` reaches every retriever through `ranker(articles, config, workdir)`. The re-ranker cannot
+answer that on its own: the competition's impressions are a later week over its own catalogue, so
+their counters, freshness and retriever scores come from files the feature store does not hold.
+The `Ranker` therefore takes a `build_frame` callable, and `ranker` without one raises and names
+ticket 08. The alternative — assembling features from the feature store's log for impressions a
+week later — produces a well-formed submission ranked on numbers that describe another period,
+which is the class of failure this project keeps trying to make impossible rather than unlikely.
+
+## 2026-09-15 — The leaky sliding window is the hour *after* `t`, so it is not a superset
+
+Found while testing the Q9 pair through the re-ranker. The cumulative leaky counter is the whole
+log and dominates the causal read everywhere; a *sliding* one does not, and should not. The causal
+hour is `[t - 1h, t)` and the leaky one is `[t, t + 1h)` — the same width, moved onto the future
+the server could not have had, and closed on the left so it contains the impression's own outcome.
+So the two arms are compared for difference on the sliding columns and for size on the cumulative
+one, and the tests say which is which. A "leaky = bigger number" intuition would have quietly made
+the sliding arms look like a bug.

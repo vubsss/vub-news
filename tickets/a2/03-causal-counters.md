@@ -9,11 +9,16 @@ object, not a second implementation.
 
 **Blocked by:** 01 — the counter's bytes and build time are ledger rows.
 
-**Status:** ready-for-agent
+**Status:** done 2026-09-15
 
-- [ ] A `counters` module builds one counter store from a behaviours frame (`impression_time`, `candidate_ids`, `labels`).
-- [ ] `at(article_ids, t)` returns exposures-so-far, clicks-so-far and CTR-so-far, counting only impressions with time strictly less than `t` — an impression at exactly `t` is excluded.
-- [ ] `first_seen(article_ids, t)` returns the earliest prior appearance strictly before `t`, or null when the article has not been seen — never a time at or after `t`.
-- [ ] Window is a parameter: cumulative, or sliding over a duration; both share the interface.
-- [ ] **The leakage test, named for Q9:** an impression never sees its own outcome; two impressions at the same instant do not see each other; removing every row after `t` from the log leaves `at(·, t)` unchanged; the whole-log read is ≥ the causal read at every `t`.
-- [ ] Ledger rows: counter-store bytes and build seconds per dataset, for cumulative and each sliding window tried.
+- [x] A `counters` module builds one counter store from a behaviours frame (`impression_time`, `candidate_ids`, `labels`).
+- [x] `at(article_ids, t)` returns exposures-so-far, clicks-so-far and CTR-so-far, counting only impressions with time strictly less than `t` — an impression at exactly `t` is excluded.
+- [x] `first_seen(article_ids, t)` returns the earliest prior appearance strictly before `t`, or null when the article has not been seen — never a time at or after `t`.
+- [x] Window is a parameter: cumulative, or sliding over a duration; both share the interface.
+- [x] **The leakage test, named for Q9:** an impression never sees its own outcome; two impressions at the same instant do not see each other; removing every row after `t` from the log leaves `at(·, t)` unchanged; the whole-log read is ≥ the causal read at every `t`.
+- [x] Ledger rows: counter-store bytes and build seconds per dataset, for cumulative and each sliding window tried.
+
+**Found on the way:** a moment past the log's end must take its window from the real `t` before
+clamping into the store — clamping first turned "the last hour" into "the whole log" for any
+`t` after the last impression, which is exactly where a test-time read sits. Caught by the
+truncation test; covered by its own assertion now. See `DECISIONS.md`.

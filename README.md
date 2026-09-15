@@ -619,6 +619,7 @@ pipeline/
   ingest.py           raw files -> the unified schema, dataset-agnostic
   sources.py          per-dataset adapters: the only module that knows either shape
   split.py            temporal train/tune/validation/test split and its leakage guards
+  counters.py         per-article exposure/click counters, fitted once, read strictly before t
   preprocess.py       language-parameterised cleaning, for documents and queries alike
   bm25_index.py       BM25 index, click-history queries, recall@K
   embed.py            article vectors, aligned, unit length, and geometrically corrected

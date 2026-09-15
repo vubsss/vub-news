@@ -64,3 +64,25 @@ forced with it (they write `split` and `lexical_text` back into the store). Ever
 column on all six tables compared equal to the previous store, row counts unchanged, split sizes
 unchanged. `history.click_scroll` needs a NaN-aware comparison — it is identical. The downstream
 indexes were not rebuilt: they read columns that did not change.
+
+## 2026-09-15 — One counter store, sorted `int64` keys, read by binary search strictly before `t`
+
+Over two implementations (a running counter for the causal arm, a `groupby` for the leaky one)
+and over a per-article list of timestamps: every exposure is one key, `article_position × span +
+µs_offset`, kept sorted, so "exposures strictly before `t`" is one `searchsorted(side="left")`
+and a sliding window is the difference of two. The whole-log read is the same call with
+`t = +inf`, which clamps to the end of the article's slot — Q9's two arms differ only in the
+moment asked for, and a test that removes every row after `t` and gets the same answer proves the
+causal one. "Strictly" is why an impression at exactly `t` is excluded: it does not see its own
+outcome, and two impressions in the same second (28% of MIND's rows and 21% of EB-NeRD's carry a
+timestamp an earlier row already carries) do not see each other's.
+
+What this costs: 68.7 MB on MIND and 45.9 MB on EB-NeRD, built in ~4 s and ~3 s, and it is the
+same bytes for every window — cumulative and sliding both need the timestamps for a causal read;
+the "one int per article" cumulative counter is a serving-time structure that could only answer
+`now`. Lookups are 0.2–0.35 ms p50 per impression for every window, so the window choice in
+ticket 06 is a functional one, not an engineering one.
+
+Two things a reader can lean on: an id the log never showed reads 0 / 0 / NaN (not 0 CTR — the
+re-ranker can tell "never shown" from "shown, never clicked"), and the whole-log read with a
+window is refused rather than answered, because a window ending at infinity is not a thing.

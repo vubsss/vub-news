@@ -80,21 +80,30 @@ class _Sampler(threading.Thread):
 
 
 @contextmanager
+def sample():
+    """Wall time and peak VmRSS of a block, filled into the yielded dict as
+    `seconds`, `entry_rss_mb` and `peak_rss_mb` when it ends -- for a module
+    that records its own cost in the ledger rather than the stage table."""
+    sampler = _Sampler()
+    cost: dict[str, float] = {"entry_rss_mb": sampler.peak}
+    sampler.start()
+    started = time.perf_counter()
+    try:
+        yield cost
+    finally:
+        cost["seconds"] = time.perf_counter() - started
+        cost["peak_rss_mb"] = sampler.stop()
+
+
+@contextmanager
 def measure(stage: str, dataset: str, run: str):
     """Time and sample one stage, appending a row when it finishes.
 
     A stage that raises writes nothing: the build does not mark it done
     either, and a cost for work that did not complete is worse than no number.
     """
-    sampler = _Sampler()
-    entry = sampler.peak
-    sampler.start()
-    started = time.perf_counter()
-    try:
+    with sample() as cost:
         yield
-    finally:
-        elapsed = time.perf_counter() - started
-        peak = sampler.stop()
 
     record(
         {
@@ -103,9 +112,9 @@ def measure(stage: str, dataset: str, run: str):
             "cpus": len(os.sched_getaffinity(0)),
             "dataset": dataset,
             "stage": stage,
-            "seconds": round(elapsed, 2),
-            "entry_rss_mb": round(entry, 1),
-            "peak_rss_mb": round(peak, 1),
+            "seconds": round(cost["seconds"], 2),
+            "entry_rss_mb": round(cost["entry_rss_mb"], 1),
+            "peak_rss_mb": round(cost["peak_rss_mb"], 1),
         }
     )
 

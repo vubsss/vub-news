@@ -15,6 +15,7 @@ from pipeline import (
     acquire,
     ann_index,
     bm25_index,
+    counters,
     embed,
     evaluate,
     ingest,
@@ -41,6 +42,11 @@ STAGES = (
     Stage("ingest", "raw files -> unified schema feature store", ingest.run),
     Stage(
         "split", "temporal train/val/test split + leakage guards", split.run
+    ),
+    Stage(
+        "counters",
+        "causal per-article exposure/click counters, read strictly before t",
+        counters.run,
     ),
     Stage(
         "preprocess",

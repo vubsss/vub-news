@@ -13,7 +13,7 @@ import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
-from pipeline import paths, sources, submissions
+from pipeline import paths, retrieval, sources, submissions
 
 # A unified-schema column with no direct source column: the ingest stage
 # (ticket 3) builds it from other source columns.
@@ -371,6 +371,68 @@ class EmbeddingSpec:
 
 
 @dataclass(frozen=True)
+class NrmsSpec:
+    """NRMS-DocVec's shape and how it is fitted, per dataset.
+
+    The baseline A2 reproduces, so the defaults are the paper's where the paper
+    has one -- four in-impression negatives per positive, a multi-head
+    self-attention user encoder over the recent clicks, additive attention on
+    top -- and this project's where it does not.
+
+    `history_length` defaults to `retrieval.HISTORY_K` so that the harness's
+    own default window is the one the checkpoint was trained at. It is baked
+    into the trained weights, which is why `nrms.rank_candidates` refuses a
+    window other than the checkpoint's rather than quietly scoring at it: a
+    retriever scored over a window it was not fitted for is a different
+    retriever under the same name.
+
+    `train_fraction` is the stacking boundary. NRMS fits on the *earlier* half
+    of `train` and the re-ranker on the later one, so the re-ranker's NRMS
+    feature is a prediction about impressions the NRMS never saw. Halving by
+    time rather than at random is what makes that true: a random half leaks the
+    same period's popularity into both.
+
+    `corrected` says whether the input vectors are the ones A1's registry
+    corrected (`centre` on MIND, `abtt:1` on EB-NeRD) or the raw ones from the
+    same encoder. A1 chose the correction for nearest-neighbour retrieval;
+    whether a *trained* user encoder still wants it is a separate question, and
+    a second ledger row is what answers it.
+
+    `precision` is the checkpoint's stored dtype, not the arithmetic's: scoring
+    is float32 either way, and `fp16` halves `model_bytes` at whatever it costs
+    in tune AUC, which is a row rather than an assumption.
+    """
+
+    history_length: int = retrieval.HISTORY_K
+    heads: int = 16
+    head_dim: int = 16
+    attention_dim: int = 200
+    dropout: float = 0.2
+    # Per positive, drawn from the same impression. The paper's 1:4.
+    negatives: int = 4
+    # Where those negatives come from: `impression` is the paper's setting --
+    # an article this user was shown at this moment and did not click --
+    # and `catalogue` draws uniformly from every article instead. The second is
+    # expected to lose, and exists so the note can say the baseline was trained
+    # the way its authors trained it *and* what that choice was worth.
+    negative_source: str = "impression"
+    # A ceiling; the epoch is chosen by early stopping on tune AUC.
+    epochs: int = 8
+    patience: int = 1
+    learning_rate: float = 1e-3
+    batch_size: int = 64
+    # Impressions per forward pass when scoring. Bigger is fewer Python
+    # round-trips and more resident candidate vectors; tried at 64 and 512.
+    score_batch: int = 512
+    train_fraction: float = 0.5
+    corrected: bool = True
+    precision: str = "fp32"
+    # Fixed, so two runs over the same split produce the same checkpoint and a
+    # difference between two cells of the grid is the cell rather than the draw.
+    seed: int = 0
+
+
+@dataclass(frozen=True)
 class SubmissionSpec:
     """What the competition hands over, and what it will accept back.
 
@@ -439,6 +501,10 @@ class DatasetConfig:
     # spelled out per dataset: both start from the same sweep, and the entry
     # that differs is the one that has been measured.
     features: FeatureSpec = FeatureSpec()
+    # The NRMS-DocVec baseline's shape. Defaulted for both datasets: the grid
+    # that chooses the history length and the head count runs on tune, and the
+    # winning cell is written here beside the row that chose it.
+    nrms: NrmsSpec = NrmsSpec()
 
     @property
     def raw_dir(self) -> Path:

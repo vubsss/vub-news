@@ -436,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--retriever",
         action="append",
-        choices=sorted(evaluate.RETRIEVERS),
+        choices=sorted(evaluate.STAGE_ONE),
         help="restrict to one retriever (repeatable); default is all of them",
     )
     parser.add_argument(
@@ -477,7 +477,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     configs = [DATASETS[name] for name in (args.dataset or sorted(DATASETS))]
-    retrievers = args.retriever or sorted(evaluate.RETRIEVERS)
+    retrievers = args.retriever or sorted(evaluate.STAGE_ONE)
     windows = tuple(args.window) if args.window else WINDOWS
     resamples = args.resamples
     if args.quick:

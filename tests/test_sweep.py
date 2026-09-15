@@ -296,9 +296,12 @@ def test_the_command_runs_the_grid_and_writes_one_line_per_cell(store, capsys):
     assert sweep.main(["--dataset", "mind", "--resamples", "20"]) == 0
 
     rows = stored()
+    # The stage-one retrievers, not everything the harness can score: this
+    # sweep varies the click window a *query* is pooled over, which the A2
+    # entries do not have — their window is inside trained weights.
     assert {(r["retriever"], r["history_k"]) for r in rows} == {
         (retriever, window)
-        for retriever in evaluate.RETRIEVERS
+        for retriever in evaluate.STAGE_ONE
         for window in sweep.WINDOWS
     }
     assert "min of grid time" in capsys.readouterr().out

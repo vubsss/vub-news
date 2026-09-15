@@ -138,3 +138,44 @@ The cosine features read the embedding matrix with `np.load(mmap_mode="r")` and 
 rows per impression. The retriever-score features do not: they come from `rank_candidates`, the
 harness's own call, which loads its own copy. Recomputing those scores here off the mmap would be
 a second implementation of a published number, which is the trade this records rather than hides.
+
+## 2026-09-15 — NRMS is a fourth entry in `RETRIEVERS`, and `STAGE_ONE` is the other three
+
+The harness reaches a retriever only through `rank_candidates`, so the baseline gets slicing,
+bootstrap intervals and beyond-accuracy metrics by being an entry in the table. What that exposed
+is that two A1 sweeps were fanning out over *everything the harness can score* — `sweep` retrieves
+from the corpus at depth, `profile_sweep` varies the pooling — and neither is a thing a trained
+re-ranker has. So `evaluate.STAGE_ONE` names the three that pool a query over a click window and
+rank the whole corpus, and the sweeps default to that; `RETRIEVERS` stays the harness's table.
+One list, in the module the others already import.
+
+`nrms.rank_candidates` refuses rather than ignores. The click window is inside the trained
+weights, so a call at another window raises instead of scoring; `pooling` raises too, because a
+learned user encoder has no aggregator and silently ignoring the argument would report a sweep's
+cell under a name that never ran.
+
+## 2026-09-15 — The stacking boundary is a timestamp, not a row count
+
+NRMS fits on the earlier half of `train` and the GBDT on the later half, so the GBDT's NRMS
+feature is a prediction about impressions the NRMS never saw. `nrms.halves` cuts at the timestamp
+at the fraction's position and puts every impression stamped at that instant on one side: a cut by
+row count would leave two impressions of the same second in different halves, which is the same
+leak in miniature, and a random split would put the same day's popularity in both.
+
+## 2026-09-15 — "Attend here" and "there is a vector here" are two flags
+
+Found by the test rather than by reading. A cold user's history is all padding, and a fully masked
+row makes the attention's softmax NaN — so position 0 stays attended. The first implementation left
+its row index at 0, which handed that user *article row 0's vector* as their entire history: a
+wrong feature, on exactly the users a cold-start slice is about, invisible in every metric. The
+padding row is now -1 and `gather` zeroes any position that is unattended **or** has no vector, so
+a cold user scores every candidate alike and the ranking falls back to the order the candidates
+arrived in — which is what the A1 retrievers do with a user they know nothing about.
+
+## 2026-09-15 — The paper's number is a placeholder, not a guess
+
+`nrms.PAPER["auc"]` is `None` and the grid's markdown says the comparison is outstanding. The
+ebnerd-benchmark figure has to be read off the paper; a number typed from memory into a design
+note is worse than a stated gap, because it looks like a measurement. Filling it in is one line
+and the renderer already prints the gap either way — including when this reproduction lands below
+its source, which is a finding rather than something to leave out.

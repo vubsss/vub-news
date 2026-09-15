@@ -8,6 +8,7 @@ everything in this directory is placement.
     ada/sync.sh data            push the raw archives (~3.4 GB)
     sbatch ada/env.sbatch       build the Python environment, once
     sbatch ada/build.sbatch     run the pipeline
+    sbatch ada/nrms.sbatch      fit the NRMS-DocVec baseline on a card
     ada/sync.sh pull            bring artifacts back
 
 ## What was measured, so a later run does not have to ask

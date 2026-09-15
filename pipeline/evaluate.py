@@ -39,7 +39,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-from pipeline import ann_index, bm25_index, hybrid, ingest, paths, retrieval
+from pipeline import ann_index, bm25_index, hybrid, ingest, nrms, paths, retrieval
 from pipeline.datasets import DATASETS, DatasetConfig
 
 # The retrievers the harness can score. The values are modules, each exposing
@@ -50,7 +50,16 @@ RETRIEVERS = {
     "bm25": bm25_index,
     "ann": ann_index,
     "hybrid": hybrid,
+    "nrms": nrms,
 }
+
+# The stage-one retrievers: the ones that rank the whole corpus and build their
+# query by pooling similarities over the click window. A2's entries re-rank a
+# supplied candidate list with a model that was fitted at one window and has no
+# aggregator at all, so the sweeps that vary a pooling or retrieve at depth run
+# over these rather than over everything the harness can score. Naming them
+# here rather than in each sweep keeps one list to keep true.
+STAGE_ONE = ("bm25", "ann", "hybrid")
 
 # nDCG cut-offs, per SPEC.
 NDCG_DEPTHS = (5, 10)

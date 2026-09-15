@@ -446,7 +446,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--retriever",
         action="append",
-        choices=sorted(evaluate.RETRIEVERS),
+        choices=sorted(evaluate.STAGE_ONE),
         help="restrict to one retriever (repeatable); default is both",
     )
     args = parser.parse_args(argv)
@@ -468,7 +468,7 @@ def main(argv: list[str] | None = None) -> int:
         text = decay_document(rows, config.name, args.split)
         (paths.ARTIFACTS_DIR / f"profile-decay-{suffix}.md").write_text(text)
     else:
-        retrievers = tuple(args.retriever or sorted(evaluate.RETRIEVERS))
+        retrievers = tuple(args.retriever or sorted(evaluate.STAGE_ONE))
         rows = run(config, args.split, args.resamples, retrievers)
         confirmed = confirm_pooling_reached_the_retriever(rows)
         results = paths.ARTIFACTS_DIR / RESULTS.format(suffix=suffix)

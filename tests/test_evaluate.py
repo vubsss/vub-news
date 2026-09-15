@@ -10,7 +10,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pipeline import ann_index, bm25_index, evaluate, ingest, paths
+import dataclasses
+
+from pipeline import ann_index, bm25_index, evaluate, ingest, nrms, paths
 from pipeline.datasets import DATASETS
 
 MIND = DATASETS["mind"]
@@ -600,10 +602,16 @@ def store(tmp_path, monkeypatch):
 
 def _store_of(store):
     """A two-article corpus with one validation and one test impression, plus
-    the artifacts both retrievers load. Small enough that every metric it
-    produces is one, which is what makes it a seam test rather than a
-    measurement: what is under test is that the harness reaches both
-    retrievers the same way, not what either of them scores."""
+    the artifacts every retriever loads. Small enough that every metric the
+    stage-one retrievers produce is one, which is what makes it a seam test
+    rather than a measurement: what is under test is that the harness reaches
+    every retriever the same way, not what any of them scores.
+
+    The train split spans four distinct moments and there is a `tune`
+    impression, because the fourth retriever is a *model*: it fits on the
+    earlier half of train by time and stops on tune, so a store without those
+    is one it cannot be trained against at all.
+    """
     from pipeline import embed
 
     pd.DataFrame(
@@ -616,22 +624,31 @@ def _store_of(store):
             "lexical_text": pd.Series(["sharks win", "markets fall"], dtype="string"),
         }
     ).to_parquet(store / "articles.parquet", index=False)
+    train = behaviours(
+        [
+            ("t1", ["a1", "a2"], [1, 0]),
+            ("t2", ["a1", "a2"], [0, 1]),
+            ("t3", ["a1", "a2"], [1, 0]),
+            ("t4", ["a1", "a2"], [0, 1]),
+        ],
+        split="train",
+        day="2019-11-13",
+    )
+    # Four distinct moments, so the stacking boundary has somewhere to fall.
+    train["impression_time"] = pd.to_datetime(
+        [f"2019-11-13 0{hour}:00:00" for hour in range(1, 5)]
+    )
     pd.concat(
         [
-            # A train split too, so the store has the shape the real one
-            # does and the harness is seen to score validation rather than it.
-            behaviours(
-                [("t1", ["a1", "a2"], [1, 0]), ("t2", ["a1", "a2"], [0, 1])],
-                split="train",
-                day="2019-11-13",
-            ),
+            train,
+            behaviours([("n1", ["a1", "a2"], [1, 0])], split="tune", day="2019-11-13"),
             behaviours([("d1", ["a1", "a2"], [1, 0])], split="validation"),
             behaviours([("d2", ["a1", "a2"], [1, 0])], split="test", day="2019-11-15"),
         ]
     ).to_parquet(store / "behaviors.parquet", index=False)
-    histories([("t1", 1), ("t2", 1), ("d1", 1), ("d2", 1)]).to_parquet(
-        store / "history.parquet", index=False
-    )
+    histories(
+        [("t1", 1), ("t2", 1), ("t3", 1), ("t4", 1), ("n1", 1), ("d1", 1), ("d2", 1)]
+    ).to_parquet(store / "history.parquet", index=False)
 
     articles = pd.read_parquet(store / "articles.parquet")
     bm25_index.build(articles, MIND).save(MIND.artifacts_dir / "bm25")
@@ -639,6 +656,10 @@ def _store_of(store):
         vectors=np.array([[1.0, 0.0], [0.0, 1.0]], dtype="float32"),
         article_ids=np.array(["a1", "a2"], dtype=object),
     ).save(embed.output_dir(MIND))
+    # The fourth retriever loads a checkpoint rather than an index, so the
+    # store is not complete until one has been fitted against it.
+    model, _ = nrms.train(MIND, dataclasses.replace(MIND.nrms, epochs=1))
+    nrms.save(model, MIND.nrms, 2, nrms.checkpoint_path(MIND))
 
 
 def test_the_command_scores_one_dataset_retriever_and_split(store, capsys):
@@ -714,7 +735,14 @@ def test_every_retriever_is_scored_by_the_same_code_path(store, capsys):
             evaluate.METRICS
         )
         assert value_of(written, "coverage") == pytest.approx(1.0)
-        assert value_of(written, "auc") == pytest.approx(1.0)
+        if retriever in evaluate.STAGE_ONE:
+            # The stage-one retrievers rank this store by construction. The
+            # trained one does not: what it scores is a property of a fitted
+            # model, not of the harness, and asserting a number for it here
+            # would be asserting something this test is not about.
+            assert value_of(written, "auc") == pytest.approx(1.0)
+        else:
+            assert not np.isnan(value_of(written, "auc"))
 
 
 def test_the_build_stage_leaves_the_test_split_alone(store):

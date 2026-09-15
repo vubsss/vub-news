@@ -550,8 +550,11 @@ def test_float16_halves_the_frame_and_keeps_the_values(store):
     wide = features.build(MIND, "validation", FeatureSpec(precision="float32"))
     narrow = features.build(MIND, "validation", FeatureSpec(precision="float16"))
     assert narrow["bytes"] < wide["bytes"]
+    # Two precisions are two files. Ticket 06 trains on both and compares them,
+    # which a shared name would turn into a model against itself.
+    assert wide["path"] != narrow["path"] and wide["path"].exists()
 
-    frame = features.read(MIND, "validation")
+    frame = features.read(MIND, "validation", precision="float16")
     assert frame["ann_score"].dtype == np.float16
     assert frame["hist_cos_mean_uniform"].astype("float32").tolist() == pytest.approx(
         [1.0, 2**-0.5, np.nan, np.nan], nan_ok=True, abs=1e-3

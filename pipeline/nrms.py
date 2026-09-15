@@ -695,29 +695,7 @@ def rank_candidates(
     scored = score_all(
         model, embeddings.vectors, rows, mask, candidates, embeddings.index, spec.score_batch
     )
-    return ranked_frame(impression_ids, candidates, scored)
-
-
-def ranked_frame(impression_ids, candidates, scored) -> pd.DataFrame:
-    """The shape every retriever emits: ids and scores, best first.
-
-    Ties keep the order the candidates arrived in -- a stable sort, as in
-    `ann_index.score_candidates` -- so a cold user, whose candidates all score
-    the same, comes back in the dataset's own order rather than in one this
-    model invented.
-    """
-    ranked_ids, ranked_scores = [], []
-    for articles, scores in zip(candidates, scored):
-        order = np.argsort(-np.asarray(scores), kind="stable")
-        ranked_ids.append([articles[position] for position in order])
-        ranked_scores.append([float(scores[position]) for position in order])
-    return pd.DataFrame(
-        {
-            "impression_id": pd.Series(impression_ids, dtype="string"),
-            "ranked_ids": ranked_ids,
-            "scores": ranked_scores,
-        }
-    )
+    return retrieval.ranked_frame(impression_ids, candidates, scored)
 
 
 @dataclass(frozen=True)
@@ -749,7 +727,7 @@ class Ranker:
             self.embeddings.index,
             self.spec.score_batch,
         )
-        return ranked_frame(
+        return retrieval.ranked_frame(
             list(history["impression_id"].astype("string")), candidates, scored
         )
 

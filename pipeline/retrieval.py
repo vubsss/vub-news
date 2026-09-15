@@ -53,6 +53,30 @@ DEPTHS = (50, 100, 200)
 VALIDATION = "validation"
 
 
+def ranked_frame(impression_ids, candidates, scored) -> pd.DataFrame:
+    """The shape every retriever emits: candidate ids and scores, best first.
+
+    Here rather than in one of the retrievers because the A2 entries score a
+    candidate list directly -- there is no index to read the order off -- and
+    two modules writing this sort themselves is two chances to break the tie
+    rule. Ties keep the order the candidates arrived in, which a stable sort
+    gives, so an impression its model cannot separate comes back in the
+    dataset's own order rather than in one the model invented.
+    """
+    ranked_ids, ranked_scores = [], []
+    for articles, scores in zip(candidates, scored, strict=True):
+        order = np.argsort(-np.asarray(scores, dtype="float64"), kind="stable")
+        ranked_ids.append([articles[position] for position in order])
+        ranked_scores.append([float(scores[position]) for position in order])
+    return pd.DataFrame(
+        {
+            "impression_id": pd.Series(list(impression_ids), dtype="string"),
+            "ranked_ids": ranked_ids,
+            "scores": ranked_scores,
+        }
+    )
+
+
 class CorpusError(RuntimeError):
     """Retrieval returned an article the corpus does not contain."""
 

@@ -702,9 +702,23 @@ def frame_for(
 # Storage: a row group per chunk, a projected read per arm.
 
 
-def path_for(config: DatasetConfig, split: str, causal: bool = True) -> Path:
+def path_for(
+    config: DatasetConfig,
+    split: str,
+    causal: bool = True,
+    precision: str | None = None,
+) -> Path:
+    """Where one split's frame lives, named for what distinguishes its rows.
+
+    The precision is in the name because ticket 06 trains on both files and
+    compares them; a shared name would mean the second build silently replaced
+    the first and the comparison would be a model against itself. The chunk and
+    row-group sizes are *not* in the name, for the opposite reason: they change
+    what the build costs and not one value in the file.
+    """
+    precision = precision or config.features.precision
     name = split if causal else f"{split}-leaky"
-    return config.feature_store_dir / DIRECTORY / f"{name}.parquet"
+    return config.feature_store_dir / DIRECTORY / f"{name}-{precision}.parquet"
 
 
 def schema_for(spec: FeatureSpec) -> pa.Schema:
@@ -754,6 +768,7 @@ def read(
     split: str,
     columns: tuple[str, ...] | None = None,
     causal: bool = True,
+    precision: str | None = None,
 ) -> pd.DataFrame:
     """The frame back, optionally projected onto one arm's columns.
 
@@ -764,7 +779,7 @@ def read(
     the file; asked for by name it is refused here, rather than coming back as
     a frame that quietly lacks it.
     """
-    path = path_for(config, split, causal)
+    path = path_for(config, split, causal, precision)
     if not path.exists():
         raise FeatureError(
             f"no feature frame at {path}. Build it with "
@@ -819,7 +834,7 @@ def build(
         raise FeatureError(f"{config.name} has no {split} impressions")
 
     loaded = load(config, behaviors)
-    path = path_for(config, split, causal)
+    path = path_for(config, split, causal, spec.precision)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     cost: dict[str, float] = {}
@@ -897,7 +912,7 @@ def record(report: dict, spec: FeatureSpec) -> dict:
 def run(config: DatasetConfig, force: bool = False) -> None:
     spec = config.features
     for split in SPLITS:
-        path = path_for(config, split)
+        path = path_for(config, split, precision=spec.precision)
         if not force and path.exists():
             print(f"    {split} frame is already built at {path}")
             continue

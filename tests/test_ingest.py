@@ -174,9 +174,14 @@ def test_impression_ids_from_different_source_files_do_not_collide(raw):
 
 
 def write_ebnerd_behaviors(split, rows):
-    """rows: (impression_id, user_id, impression_time, inview, clicked)"""
+    """rows: (impression_id, user_id, impression_time, inview, clicked[, session_id])
+
+    The session defaults to the impression id -- one impression per session --
+    for the tests that are not about sessions.
+    """
     path = EBNERD.raw_dir / split / "behaviors.parquet"
     path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [row if len(row) == 6 else (*row, row[0]) for row in rows]
     frame = pd.DataFrame(
         rows,
         columns=[
@@ -185,10 +190,12 @@ def write_ebnerd_behaviors(split, rows):
             "impression_time",
             "article_ids_inview",
             "article_ids_clicked",
+            "session_id",
         ],
     )
     frame["impression_id"] = frame["impression_id"].astype("uint32")
     frame["user_id"] = frame["user_id"].astype("uint32")
+    frame["session_id"] = frame["session_id"].astype("uint32")
     frame.to_parquet(path)
 
 
@@ -210,6 +217,34 @@ def test_ebnerd_labels_come_from_the_clicked_article_ids(raw):
     # An impression nobody clicked is still a valid impression.
     second = behaviors[behaviors["user_id"] == "56"].iloc[0]
     assert second["labels"] == [0, 0]
+
+
+def test_ebnerd_carries_the_session_and_mind_carries_it_as_null(raw):
+    stamp = pd.Timestamp("2023-05-23 07:31:00")
+    write_ebnerd_behaviors(
+        "train",
+        [(7, 55, stamp, [11, 12], [12], 900), (8, 55, stamp, [13], [], 900)],
+    )
+    # The same session number in the other file is a different session: the
+    # ids restart per file, as the impression ids do, and are qualified alike.
+    write_ebnerd_behaviors("validation", [(9, 56, stamp, [21], [], 900)])
+    write_mind_behaviors(
+        "train", [("1", "U1", "11/11/2019 9:05:58 AM", "N1", "N3-1 N4-0")]
+    )
+    write_mind_behaviors("dev", [("1", "U2", "11/15/2019 7:00:00 PM", "N9", "N3-0")])
+
+    ebnerd = ingest.build_behaviors(EBNERD)
+    mind = ingest.build_behaviors(MIND)
+
+    # Two impressions in one session share the id, as a string like every
+    # other id in the store.
+    assert ebnerd["session_id"].tolist() == ["train-900", "train-900", "validation-900"]
+    assert ebnerd["session_id"].dtype == "string"
+    assert ebnerd.groupby("session_id")["user_id"].nunique().max() == 1
+    # The column exists on MIND and is null, not absent.
+    assert "session_id" in mind.columns
+    assert mind["session_id"].isna().all()
+    assert mind["session_id"].dtype == "string"
 
 
 def test_both_datasets_produce_the_same_behavior_schema(raw):

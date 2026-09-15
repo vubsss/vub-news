@@ -42,6 +42,11 @@ BEHAVIOR_COLUMNS = (
     "source",
     "user_id",
     "impression_time",
+    # The browsing session the impression was served in, for the session
+    # features of A2. EB-NeRD ships one; MIND has no notion of a session and
+    # carries the column as null, the way it carries `published_time` -- a
+    # feature over it is null there, and no stage asks which dataset it holds.
+    "session_id",
     "candidate_ids",
     "labels",
     "split",
@@ -97,6 +102,7 @@ COLUMN_DTYPES = {
     "source": "string",
     "user_id": "string",
     "impression_time": "datetime64[us]",
+    "session_id": "string",
     "candidate_ids": "object",
     "labels": "object",
     "split": "string",
@@ -502,6 +508,7 @@ MIND = DatasetConfig(
             "source": DERIVED,
             "user_id": "user_id",
             "impression_time": "time",
+            "session_id": None,
             # Both parsed out of the space-delimited "impressions" field.
             "candidate_ids": DERIVED,
             "labels": DERIVED,
@@ -800,6 +807,7 @@ EBNERD = DatasetConfig(
             "source": DERIVED,
             "user_id": "user_id",
             "impression_time": "impression_time",
+            "session_id": "session_id",
             "candidate_ids": "article_ids_inview",
             # Derived from the clicked ids against the in-view list.
             "labels": DERIVED,

@@ -89,6 +89,7 @@ def ebnerd_behaviors(raw: pd.DataFrame) -> pd.DataFrame:
             "impression_id": raw["impression_id"].astype(str),
             "user_id": raw["user_id"].astype(str),
             "impression_time": raw["impression_time"],
+            "session_id": raw["session_id"].astype(str),
             "candidate_ids": candidates,
             # EB-NeRD gives the clicked ids rather than a label per candidate.
             "labels": [

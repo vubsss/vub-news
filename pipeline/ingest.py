@@ -64,7 +64,10 @@ def _adapt_each_file(config: DatasetConfig, source: TableSource) -> pd.DataFrame
 
     Impression ids are only unique within a file — MIND numbers both train and
     dev from 1 — so they are qualified with that origin before the files are
-    concatenated.
+    concatenated. So are session ids, for the same reason, measured rather than
+    assumed: 7,386 of EB-NeRD's session ids appear in both its train and its
+    validation file under two different users, and none is shared by two users
+    within one file.
     """
     parts = []
     for name in source.files:
@@ -73,6 +76,8 @@ def _adapt_each_file(config: DatasetConfig, source: TableSource) -> pd.DataFrame
         frame["impression_id"] = f"{_label(name)}-" + frame["impression_id"].astype(
             str
         )
+        if "session_id" in frame:
+            frame["session_id"] = f"{_label(name)}-" + frame["session_id"].astype(str)
         parts.append(frame)
     return pd.concat(parts, ignore_index=True)
 

@@ -10,13 +10,13 @@ and `ann_index` edits, the untracked bench module) and `lightgbm` is in the envi
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done 2026-09-15
 
-- [ ] `git status` is clean before the first A2 code lands; `report/` from A1 stays untracked.
-- [ ] `lightgbm` (CPU wheel) is in `requirements.txt` and `environment.yml`; `import lightgbm` works in the project env.
-- [ ] A `ledger` module owns the row schema: keys `(dataset, stage, variant, split)`; functional columns `auc, mrr, ndcg@5, ndcg@10, diversity, novelty, coverage` each with `lo, hi`; engineering columns `index_bytes, feature_bytes, model_bytes, train_seconds, peak_rss_mb, p50_ms, p99_ms, rows_per_s`; optional `delta_vs, delta, delta_lo, delta_hi`.
-- [ ] `ledger.record(row)` appends one JSON line to `artifacts/tradeoffs.jsonl`; recording the same key twice replaces rather than duplicates.
-- [ ] `ledger.render()` writes `artifacts/tradeoffs.md` grouped by dataset then stage; blank cells are rendered as `—`, never dropped.
-- [ ] A seed command reads A1's existing evaluate JSON, bench JSONL and build-timings JSONL and records the six retriever rows with both metric families filled.
-- [ ] Tests: record-then-render round-trips a row; a re-recorded key replaces; render never raises on a row with a missing engineering value.
-- [ ] `python -m pipeline.ledger` regenerates the markdown; `pytest` is green.
+- [x] `git status` is clean before the first A2 code lands; `report/` from A1 stays untracked.
+- [x] `lightgbm` (CPU wheel) is in `requirements.txt` and `environment.yml`; `import lightgbm` works in the project env.
+- [x] A `ledger` module owns the row schema: keys `(dataset, stage, variant, split)`; functional columns `auc, mrr, ndcg@5, ndcg@10, diversity, novelty, coverage` each with `lo, hi`; engineering columns `index_bytes, feature_bytes, model_bytes, train_seconds, peak_rss_mb, p50_ms, p99_ms, rows_per_s`; optional `delta_vs, delta, delta_lo, delta_hi`.
+- [x] `ledger.record(row)` appends one JSON line to `artifacts/tradeoffs.jsonl`; recording the same key twice replaces rather than duplicates.
+- [x] `ledger.render()` writes `artifacts/tradeoffs.md` grouped by dataset then stage; blank cells are rendered as `—`, never dropped.
+- [x] A seed command reads A1's existing evaluate JSON, bench JSONL and build-timings JSONL and records the six retriever rows with both metric families filled.
+- [x] Tests: record-then-render round-trips a row; a re-recorded key replaces; render never raises on a row with a missing engineering value.
+- [x] `python -m pipeline.ledger` regenerates the markdown; `pytest` is green.

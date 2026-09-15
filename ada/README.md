@@ -9,6 +9,8 @@ everything in this directory is placement.
     sbatch ada/env.sbatch       build the Python environment, once
     sbatch ada/build.sbatch     run the pipeline
     sbatch ada/nrms.sbatch      fit the NRMS-DocVec baseline on a card
+    sbatch ada/predict-rerank.sbatch --dataset mind
+                                rank a competition's test set with the re-ranker
     ada/sync.sh pull            bring artifacts back
 
 ## What was measured, so a later run does not have to ask

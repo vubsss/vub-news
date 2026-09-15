@@ -613,3 +613,86 @@ def test_a_second_run_leaves_the_frames_alone_unless_forced(store, capsys):
 
     features.run(MIND, force=True)
     assert features.path_for(MIND, "validation").stat().st_mtime_ns != built
+
+
+# --- the competition's own period -------------------------------------------
+#
+# `for_submission` is the same Loaded context assembled from different files.
+# What these check is that the substitution is total: nothing of the test
+# period's outcomes reaches the frame, and nothing the offline frame has is
+# quietly missing from it.
+
+
+def _test_impressions():
+    """What the competition's adapter hands over: candidates and histories, no
+    labels, and a session column that MIND carries empty."""
+    return pd.DataFrame(
+        {
+            "impression_id": pd.Series(["s1", "s2"], dtype="string"),
+            "user_id": pd.Series(["u1", "u9"], dtype="string"),
+            "impression_time": pd.Series(
+                [T0 + pd.Timedelta(days=7), T0 + pd.Timedelta(days=7, hours=1)],
+                dtype="datetime64[us]",
+            ),
+            "session_id": pd.Series([None, None], dtype="string"),
+            "candidate_ids": [["a1", "a3"], ["a2", "a5"]],
+            "click_history": [["a2", "a4"], []],
+        }
+    )
+
+
+def test_the_submission_context_reads_counters_a_server_would_have(store):
+    write_store(MIND)
+    loaded = features.for_submission(
+        MIND, _articles(MIND), embed.load(MIND), _test_impressions()
+    )
+
+    assert isinstance(loaded.counts, counters.ServingCounters)
+    # The training log, frozen: a read a week later sees all of it.
+    late = loaded.counts.at(["a1"], T0 + pd.Timedelta(days=7))
+    assert late.exposures[0] >= 1
+    # And a click the competition's own history reveals.
+    assert loaded.counts.at(["a2"], T0 + pd.Timedelta(days=7)).clicks[0] >= 1
+
+
+def test_the_submission_context_carries_the_same_article_maps(store):
+    """A column the offline frame has and this one does not is a column the
+    model is served as null having been trained on values."""
+    write_store(MIND)
+    loaded = features.for_submission(
+        MIND, _articles(MIND), embed.load(MIND), _test_impressions()
+    )
+    offline = features.load(MIND, _behaviors(MIND))
+
+    assert set(loaded.category) == set(offline.category)
+    assert set(loaded.subcategory) == set(offline.subcategory)
+    assert (loaded.published is None) == (offline.published is None)
+
+
+def test_a_session_count_is_unknown_where_the_outcome_is(store):
+    """How many of a session's earlier impressions were clicked is exactly what
+    the leaderboard holds back. Counting it as zero would tell the model the
+    session had no clicks, which is a claim about data nobody has."""
+    log = _test_impressions().assign(
+        session_id=pd.Series(["x", "x"], dtype="string")
+    )
+    counted = features.session_counts(log)
+
+    # The server saw the earlier impression; it did not see its outcome.
+    assert list(counted["session_impressions"]) == [0, 1]
+    assert counted["session_clicks"].isna().all()
+
+
+def test_a_submission_chunk_is_labelled_unknown_rather_than_zero(store):
+    write_store(MIND)
+    loaded = features.for_submission(
+        MIND, _articles(MIND), embed.load(MIND), _test_impressions()
+    )
+    chunk = _test_impressions().assign(
+        n_clicks=lambda frame: frame["click_history"].map(len)
+    )
+    frame = features.frame_for(MIND, chunk, chunk, loaded)
+
+    assert (frame["label"] == features.UNKNOWN_LABEL).all()
+    assert features.UNKNOWN_LABEL != 0
+    assert list(frame.columns) == list(features.COLUMNS)

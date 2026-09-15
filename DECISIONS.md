@@ -242,3 +242,47 @@ The ablation's `cut@K (ivf)` arm reports the AUC an approximate index costs; `be
 latency it saves. Those are only comparable if they are the same index, so the nlist/nprobe rule
 moved into `bench.ivf_index` and both call it. Duplicating four lines of faiss construction would
 have let the two tables drift into describing different indexes under one name.
+
+## 2026-09-15 — A submission's clicks come from the histories, and its exposures from the log
+
+`counters.ServingCounters` is three sources behind the harness's two methods, and which three is
+the honest answer to "what does a live server know at test time". The training log is read whole,
+because all of it precedes the test period. The test log's own impressions count as **exposures**,
+read strictly before `t` with the same strictness the offline frame uses. And the only **clicks**
+the test period contributes are the ones the competition's own user histories reveal.
+
+No click of a test impression is ever counted, because the leaderboard is holding those back —
+that is the thing it is scoring. A real server would have them, we do not, and the note says so
+rather than the code quietly inferring a click from an exposure.
+
+The history clicks count **cumulatively and in no window**. MIND's histories carry no timestamp,
+so placing one in a particular hour would be inventing the moment it happened; dropping it would
+be discarding a click the server has. Cumulative is the only window the data supports.
+
+## 2026-09-15 — One frame builder, so the served columns are the trained columns
+
+`features.frame_for` now takes its scorers as an argument. Offline they are the five retrievers
+over the feature store's index; for a submission they are rankers over the competition's own
+catalogue. Everything else — the forty columns, their order, the causal counter reads — is the
+same function.
+
+The alternative was a second assembly for the competition period, which is where this would have
+gone wrong: forty columns written twice, drifting apart on the next change, and the failure it
+produces is a LightGBM booster fed a positionally-shifted feature vector. That is a well-formed
+leaderboard file with a meaningless score, and no test of either half alone would catch it.
+`test_the_submission_and_the_harness_are_one_code_path` compares the two paths' scores directly.
+
+## 2026-09-15 — A submission's labels are −1, not 0
+
+`features.UNKNOWN_LABEL` is −1. A zero in that column is the claim that nobody clicked the
+candidate, which is a statement about data nobody has. Nothing in scoring reads the column; it is
+in the frame because the frame has one schema, and it holds the one value that means "not known".
+The same reasoning makes `session_clicks` null on a test chunk while `session_impressions` is a
+real count: the server saw the earlier impressions, it did not see their outcomes.
+
+## 2026-09-15 — `--device` is not given to a retriever that has none
+
+Three of the five retrievers have no device to score on. `predict.build_ranker` inspects the
+signature and passes `device` only where it means something, rather than widening five interfaces
+for two. The failure it avoids is a `--device cuda` that BM25 accepts and ignores, which reads as
+"honoured" in a log and in a design note.

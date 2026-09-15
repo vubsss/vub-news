@@ -743,11 +743,136 @@ class Ranker:
     config: DatasetConfig
     history_k: int
     build_frame: object
+    # Wall seconds per stage, accumulated across every chunk this ranker is
+    # asked for. The submission reads it to say which stage the run is spending
+    # its hours in; `features.measured` fills the feature and nrms halves from
+    # inside `build_frame`, so the three add up to the ranking time rather than
+    # being three separately rounded fractions of it.
+    cost: dict = dataclasses.field(default_factory=dict)
 
     def rank(self, history: pd.DataFrame, candidates: list[list[str]]) -> pd.DataFrame:
         frame = self.build_frame(history, candidates)
-        return ranked_from(frame, score_frame(self.booster, frame, self.spec), self.spec)
+        with features.measured(self.cost, "gbdt"):
+            scores = score_frame(self.booster, frame, self.spec)
+        return ranked_from(frame, scores, self.spec)
 
+
+
+def test_log(config: DatasetConfig) -> pd.DataFrame:
+    """The competition's impressions, whole, for the two things that need all
+    of them at once: the exposure counters and the session counts.
+
+    Read once per job and kept as four columns -- id, user, moment, session --
+    plus the candidate lists the counters are built from. `predict` streams the
+    same file again in chunks for the ranking itself, which is the read that
+    has to stay bounded; this one is a projection and is what makes an
+    impression at `t` able to see the test period's earlier exposures at all.
+    """
+    from pipeline import predict
+
+    spec = config.submission
+    columns = ["impression_id", "user_id", "impression_time", "session_id", "candidate_ids"]
+    parts = []
+    for name in spec.impressions.files:
+        raw = predict._read(config, spec.impressions, name)
+        frame = spec.impressions.adapt(raw)
+        parts.append(frame[[name for name in columns if name in frame]])
+    return pd.concat(parts, ignore_index=True)
+
+
+def submission_frames(
+    config: DatasetConfig,
+    articles: pd.DataFrame,
+    workdir: Path,
+    history_k: int,
+    spec: RerankSpec,
+    cost: dict | None = None,
+    device: str | None = None,
+):
+    """The chunk-to-frame callable the submission's `Ranker` holds.
+
+    Everything a chunk needs that does not change between chunks is built once
+    here -- the two retrievers' rankers over the competition's catalogue, the
+    NRMS checkpoint, the counters a server would have, the article maps -- and
+    the per-chunk work is the same `features.frame_for` the offline path calls,
+    handed different scorers. One frame builder, so the model is served the
+    columns it was trained on.
+    """
+    from pipeline import ann_index, bm25_index, nrms as nrms_module
+
+    cost = {} if cost is None else cost
+    log = test_log(config)
+    rankers = {
+        "ann": ann_index.ranker(articles, config, workdir, history_k),
+        "bm25": bm25_index.ranker(articles, config, workdir, history_k),
+    }
+    scored_by = {
+        name: (lambda chunk, history, one=one: one.rank(history, list(chunk["candidate_ids"])))
+        for name, one in rankers.items()
+    }
+    loaded = features.for_submission(
+        config, articles, rankers["ann"].embeddings, log
+    )
+    nrms_ranker = (
+        nrms_module.ranker(
+            articles,
+            config,
+            workdir,
+            history_k,
+            **({} if device is None else {"device": device}),
+        )
+        if spec.nrms
+        else None
+    )
+
+    def build(chunk: pd.DataFrame, candidates=None) -> pd.DataFrame:
+        # `candidates` arrives for the interface's sake and is deliberately not
+        # read: the feature side of the frame is built from the chunk's own
+        # candidate lists, so taking NRMS's from anywhere else is an
+        # opportunity for the two halves of one row to describe two different
+        # candidate sets. The caller passes the same lists; this makes it so.
+        rows = chunk.reset_index(drop=True)
+        candidates = list(rows["candidate_ids"])
+        # The competition's impression row is its own history row, so the two
+        # frames `frame_for` pairs positionally are one frame here. `n_clicks`
+        # is the one column ingest adds that the competition's files do not
+        # carry, and it is the length of the history they do carry -- computed
+        # rather than left out, because a model trained with the column and
+        # served without it is served a different schema.
+        if "n_clicks" not in rows:
+            rows = rows.assign(
+                n_clicks=rows["click_history"].map(len).astype("int64")
+            )
+        with features.measured(cost, "features"):
+            frame = features.frame_for(
+                config,
+                rows,
+                rows,
+                loaded,
+                causal=spec.causal,
+                history_k=history_k,
+                scorers=scored_by,
+            )
+        if nrms_ranker is None:
+            return frame
+        with features.measured(cost, "nrms"):
+            ranked = nrms_ranker.rank(rows, candidates)
+            scores = {
+                (impression, article): score
+                for impression, articles_, values in zip(
+                    ranked["impression_id"], ranked["ranked_ids"], ranked["scores"]
+                )
+                for article, score in zip(articles_, values)
+            }
+            frame[NRMS_COLUMN] = [
+                scores.get((impression, article), np.nan)
+                for impression, article in zip(
+                    frame["impression_id"], frame["article_id"]
+                )
+            ]
+        return frame
+
+    return build
 
 
 def ranker(
@@ -756,32 +881,42 @@ def ranker(
     workdir: Path,
     history_k: int = retrieval.HISTORY_K,
     build_frame=None,
+    device: str | None = None,
 ) -> Ranker:
-    """The trained arm, ready to score a supplied catalogue's candidates.
+    """The trained arm, ready to score the competition's candidates.
 
     Same name and same shape as `ann_index.ranker` and `nrms.ranker`, which is
-    all `predict` knows about a retriever. The one piece it cannot supply for
-    itself is `build_frame`: the competition's impressions are a later period
-    over its own catalogue, so their counters, freshness and retriever scores
-    come from files the feature store does not hold. Ticket 08 builds that and
-    hands it in; asked without one, this refuses rather than quietly assembling
-    features from the wrong period's log -- which would produce a
-    well-formed submission ranked on numbers that describe another week.
+    all `predict` knows about a retriever. What it assembles for itself is the
+    part the feature store cannot answer: the competition's impressions are a
+    later period over its own catalogue, so their retriever scores, freshness
+    and counters come from its own files. `counters.ServingCounters` is what
+    makes that honest rather than convenient -- the training log frozen, the
+    test log's exposures read strictly before each impression, and no click of
+    the test period at all, because the leaderboard is holding those back.
+
+    The history window is the registry's, and the top-K cut is refused: a
+    submission is the configuration every reported number came from, and a cut
+    is an ablation row.
     """
-    if build_frame is None:
+    spec = config.rerank
+    if spec.top_k is not None:
         raise RerankError(
-            "rerank.ranker needs a frame builder for the competition's "
-            "catalogue: its counters and freshness come from the test log, "
-            "which the feature store does not contain. That is ticket 08 "
-            "(`ada/predict-rerank.sbatch`); until it lands, submit with "
-            "`--retriever ann` or `--retriever nrms`."
+            "the literal top-K cut is an ablation row, not a submission: it "
+            "reports what a hard stage-one cut costs, and a leaderboard file "
+            "produced under it would not be the configuration any reported "
+            "number came from"
         )
+    cost: dict = {}
     return Ranker(
-        booster=load_model(config),
-        spec=config.rerank,
+        booster=load_model(config, spec),
+        spec=spec,
         config=config,
         history_k=history_k,
-        build_frame=build_frame,
+        build_frame=build_frame
+        or submission_frames(
+            config, articles, workdir, history_k, spec, cost, device
+        ),
+        cost=cost,
     )
 
 

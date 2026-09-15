@@ -5,6 +5,7 @@ one thing the semantic side needs that the pipeline's stored artifact cannot
 give it — vectors for a catalogue that artifact predates."""
 
 import dataclasses
+import types
 import zipfile
 
 import numpy as np
@@ -433,6 +434,7 @@ def ebnerd_competition(tmp_path, monkeypatch):
             "impression_id": [1, 2],
             "user_id": [11, 22],
             "impression_time": pd.to_datetime(["2023-06-02 07:00", "2023-06-02 08:00"]),
+            "session_id": [100, 101],
             "article_ids_inview": [[1, 2, 3], [3, 1]],
         }
     ).to_parquet(test_dir / "behaviors.parquet", index=False)
@@ -484,6 +486,7 @@ def test_ebnerd_test_impressions_parse_without_labels():
             "impression_id": [1, 2],
             "user_id": [11, 22],
             "impression_time": pd.to_datetime(["2023-06-01", "2023-06-01"]),
+            "session_id": [100, 101],
             "article_ids_inview": [[3, 4], [5]],
         }
     )
@@ -502,6 +505,7 @@ def test_the_ebnerd_behaviours_adapter_cannot_read_the_test_file():
             "impression_id": [1],
             "user_id": [11],
             "impression_time": pd.to_datetime(["2023-06-01"]),
+            "session_id": [100],
             "article_ids_inview": [[3, 4]],
         }
     )
@@ -600,6 +604,7 @@ def test_the_id_the_competition_repeats_on_purpose_is_written_anyway(
             "impression_id": [0, 0, 5],
             "user_id": [11, 22, 11],
             "impression_time": pd.to_datetime(["2023-06-02 07:00"] * 3),
+            "session_id": [100, 101, 102],
             "article_ids_inview": [[1, 2], [2, 3], [3, 2]],
         }
     ).to_parquet(
@@ -619,6 +624,7 @@ def test_an_ordinary_id_is_still_refused_twice(ebnerd_competition):
             "impression_id": [5, 5],
             "user_id": [11, 11],
             "impression_time": pd.to_datetime(["2023-06-02 07:00"] * 2),
+            "session_id": [100, 101],
             "article_ids_inview": [[1, 2], [1, 2]],
         }
     ).to_parquet(
@@ -691,3 +697,98 @@ def test_a_matrix_cached_before_the_source_was_recorded_is_not_trusted(
     _, after = embed.for_corpus(articles, MIND, directory)
 
     assert after["cached"] == 0
+
+
+# --- what the run cost, per stage -------------------------------------------
+#
+# Ticket 08's reason for measuring the stages separately: the 10x argument has
+# to name which stage breaks first, and a single total cannot. These check the
+# accounting, not the numbers -- the numbers come from a cluster run.
+
+
+def test_the_run_reports_what_each_of_its_stages_cost(competition):
+    _, report = predict.write(MIND, retriever="bm25")
+
+    stages = [stage for stage, _, _ in predict.stage_rows(report)]
+    assert stages == ["read", "rank", "write"]
+    assert all(seconds > 0 for _, seconds, _ in predict.stage_rows(report))
+    # rows/s is impressions per second of that stage, so a stage that took
+    # longer reports fewer of them.
+    by_stage = {stage: rate for stage, _, rate in predict.stage_rows(report)}
+    assert by_stage["read"] > 0 and by_stage["write"] > 0
+
+
+def test_a_retriever_with_no_breakdown_reports_its_ranking_whole(competition):
+    """BM25 keeps no per-stage cost, so `features` and `nrms` are absent rather
+    than present and zero: a zero would say the stage ran and cost nothing."""
+    _, report = predict.write(MIND, retriever="bm25")
+    assert "features" not in report["cost"] and "nrms" not in report["cost"]
+
+
+def test_the_streaming_run_records_its_memory_at_the_first_and_last_chunk(
+    competition,
+):
+    """The evidence that the submission path streams. A run that accumulated
+    anything would show it here and in no metric."""
+    _, report = predict.write(MIND, retriever="bm25", chunk_size=1)
+
+    assert report["first_rss_mb"] > 0
+    assert report["last_rss_mb"] > 0
+    assert report["peak_rss_mb"] >= report["first_rss_mb"]
+
+
+def test_the_per_stage_cost_lands_in_the_ledger_as_its_own_row(competition):
+    _, report = predict.write(MIND, retriever="bm25")
+    written = predict.record_cost(MIND, "bm25", report)
+
+    variants = {row["variant"] for row in written}
+    assert "bm25@100k" in variants
+    assert "bm25@100k:read" in variants and "bm25@100k:write" in variants
+    for row in written:
+        assert row["split"] == "test" and row["stage"] == "submit"
+        # The functional half stays blank: the leaderboard holds the labels, so
+        # nothing in this process can score itself.
+        assert row["auc"] is None
+
+
+def test_a_device_is_given_only_to_a_retriever_that_has_one(
+    competition, monkeypatch
+):
+    """Three of the five retrievers have no device. Passing them one that they
+    silently ignore would be worse than not passing it: `--device cuda` would
+    appear to have been honoured by BM25."""
+    seen = {}
+
+    def with_device(articles, config, workdir, history_k, device="cpu"):
+        seen["device"] = device
+        return "ranker"
+
+    def without(articles, config, workdir, history_k):
+        seen["device"] = "not offered"
+        return "ranker"
+
+    monkeypatch.setitem(
+        predict.evaluate.RETRIEVERS, "fake_gpu", types.SimpleNamespace(ranker=with_device)
+    )
+    monkeypatch.setitem(
+        predict.evaluate.RETRIEVERS, "fake_cpu", types.SimpleNamespace(ranker=without)
+    )
+
+    predict.build_ranker(MIND, "fake_gpu", None, competition, 10, "cuda")
+    assert seen["device"] == "cuda"
+
+    predict.build_ranker(MIND, "fake_cpu", None, competition, 10, "cuda")
+    assert seen["device"] == "not offered"
+
+
+def test_the_chunk_benchmark_writes_no_submission(competition):
+    """It measures what a size costs so the full run can be given one. A
+    benchmark that also wrote a file would make the choice after the fact."""
+    rows = predict.bench_chunks(MIND, retriever="bm25", sizes=(1, 2))
+
+    assert rows, "the benchmark recorded nothing"
+    # One row set per size, and the two sizes do not share a name -- a label
+    # that rounded them together would have the second replace the first.
+    assert {row["variant"] for row in rows} >= {"bm25-bench@1", "bm25-bench@2"}
+    assert not list((competition / "predictions").rglob("*.txt"))
+    assert not list((competition / "predictions").rglob("*.zip"))

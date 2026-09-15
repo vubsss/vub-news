@@ -214,6 +214,117 @@ def build(behaviors: pd.DataFrame) -> CounterStore:
     )
 
 
+@dataclass(frozen=True)
+class ServingCounters:
+    """What a server knows at test time, behind the same two methods.
+
+    The submission ranks a *later* period than the feature store covers, so its
+    counters come from three places, and which three is the whole "what a live
+    server knows" line of Q4:
+
+    `trained` -- the whole training-period log, exposures and clicks. It is
+    entirely before the test period, so it is read at the same `t` as
+    everything else and simply answers with all of itself.
+
+    `shown` -- the test log's own impressions, exposures only, read **strictly
+    before `t`** exactly as the harness reads them. Fitted once over the whole
+    test file and read causally rather than accumulated chunk by chunk: those
+    two are the same answer -- `test_removing_every_row_after_t_leaves_the_
+    causal_read_unchanged` is the proof -- and one of them is a single pass
+    instead of a re-sort per chunk.
+
+    `clicked` -- how often each article appears in a test user's click history.
+    A click a server knows happened, but with no timestamp on it (MIND's
+    histories carry none), so it counts toward the cumulative counter and
+    toward no window. Said here because the alternative is a window that
+    quietly includes clicks from an unknown time.
+
+    The test log has no labels -- that is what the leaderboard is holding back
+    -- so no click of the test period itself is ever counted. A server would
+    have them; we do not, and the design note says so rather than the code
+    pretending otherwise.
+    """
+
+    trained: CounterStore
+    shown: CounterStore | None
+    clicked_ids: np.ndarray  # sorted, unique
+    clicked_counts: np.ndarray
+
+    @property
+    def nbytes(self) -> int:
+        return int(
+            self.trained.nbytes
+            + (self.shown.nbytes if self.shown is not None else 0)
+            + self.clicked_ids.nbytes
+            + self.clicked_counts.nbytes
+        )
+
+    def _from_histories(self, article_ids) -> np.ndarray:
+        ids = np.asarray(article_ids, dtype=self.clicked_ids.dtype)
+        if not len(self.clicked_ids):
+            return np.zeros(len(ids), dtype=np.int64)
+        position = np.searchsorted(self.clicked_ids, ids)
+        position = np.minimum(position, len(self.clicked_ids) - 1)
+        known = self.clicked_ids[position] == ids
+        return np.where(known, self.clicked_counts[position], 0).astype(np.int64)
+
+    def at(self, article_ids, t, window: pd.Timedelta | None = None) -> Counts:
+        """The same signature the harness's store answers, so the feature code
+        that reads it does not know which period it is serving."""
+        counted = self.trained.at(article_ids, t, window)
+        exposures, clicks = counted.exposures, counted.clicks
+        if self.shown is not None:
+            exposures = exposures + self.shown.at(article_ids, t, window).exposures
+        if window is None:
+            clicks = clicks + self._from_histories(article_ids)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ctr = np.where(exposures > 0, clicks / np.maximum(exposures, 1), np.nan)
+        return Counts(exposures, clicks, ctr)
+
+    def first_seen(self, article_ids, t) -> np.ndarray:
+        """The earlier of the two logs' first sightings, strictly before `t`.
+
+        An article the training period showed is older than the test period can
+        make it look, and an article only the test period has seen is as old as
+        its first test impression -- so the answer is the earlier of the two,
+        which is what freshness means whichever log it came from.
+        """
+        found = self.trained.first_seen(article_ids, t)
+        if self.shown is None:
+            return found
+        later = self.shown.first_seen(article_ids, t)
+        return np.where(pd.isna(found), later, np.where(pd.isna(later), found, np.minimum(found, later)))
+
+
+def clicks_in_histories(histories) -> tuple[np.ndarray, np.ndarray]:
+    """How often each article appears in a test user's click history.
+
+    One count per article over every history the competition ships, which is
+    the click side of what a server has at test time. Returned sorted so the
+    lookup above is a binary search rather than a dict of a million strings.
+    """
+    flat = [click for clicks in histories for click in clicks]
+    if not flat:
+        return np.empty(0, dtype=object), np.empty(0, dtype=np.int64)
+    ids, counts = np.unique(np.asarray(flat, dtype=str), return_counts=True)
+    return ids.astype(object), counts.astype(np.int64)
+
+
+def exposures_only(impressions: pd.DataFrame) -> CounterStore:
+    """A store over impressions whose outcomes are not known.
+
+    The test file carries candidates and no labels, so every exposure is real
+    and no click is: `build` is handed all-zero labels rather than a second
+    constructor, because a second one is a second thing that could disagree
+    about what an exposure is.
+    """
+    frame = impressions[["impression_time", "candidate_ids"]].copy()
+    frame["labels"] = [
+        np.zeros(len(candidates), dtype=bool) for candidates in frame["candidate_ids"]
+    ]
+    return build(frame)
+
+
 def bench_lookups(store: CounterStore, impressions: pd.DataFrame, window) -> dict:
     """What a read costs: per-impression latency over a sample, and bulk
     throughput over every candidate row of `impressions` in one call."""

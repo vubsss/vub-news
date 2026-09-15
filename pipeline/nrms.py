@@ -715,6 +715,11 @@ class Ranker:
     spec: NrmsSpec
     config: DatasetConfig
     history_k: int
+    # Where the scoring runs. Carried on the ranker rather than read from a
+    # module constant because the submission measures one chunk on each and
+    # submits under whichever won -- and a device the weights are not on is a
+    # silent copy per batch, which is the thing being measured.
+    device: str = DEVICE
 
     def rank(self, history: pd.DataFrame, candidates: list[list[str]]) -> pd.DataFrame:
         rows, mask = history_rows(history, self.embeddings.index, self.spec.history_length)
@@ -726,6 +731,7 @@ class Ranker:
             candidates,
             self.embeddings.index,
             self.spec.score_batch,
+            self.device,
         )
         return retrieval.ranked_frame(
             list(history["impression_id"].astype("string")), candidates, scored
@@ -737,6 +743,7 @@ def ranker(
     config: DatasetConfig,
     workdir: Path,
     history_k: int = retrieval.HISTORY_K,
+    device: str = DEVICE,
 ) -> Ranker:
     """The checkpoint over vectors for `articles`, corrected as it was trained.
 
@@ -764,11 +771,12 @@ def ranker(
         f"{variant_of(spec)}"
     )
     return Ranker(
-        model=model,
+        model=model.to(device),
         embeddings=embeddings,
         spec=spec,
         config=config,
         history_k=spec.history_length,
+        device=device,
     )
 
 

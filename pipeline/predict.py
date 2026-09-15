@@ -37,7 +37,19 @@ import pandas as pd
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
-from pipeline import acquire, evaluate, paths, preprocess, retrieval, weighting
+import inspect
+
+from pipeline import (
+    acquire,
+    evaluate,
+    features,
+    ledger,
+    paths,
+    preprocess,
+    retrieval,
+    timings,
+    weighting,
+)
 from pipeline.datasets import (
     DATASETS,
     DEFAULT_DATASETS,
@@ -74,6 +86,25 @@ HISTORY_CHUNK = 10_000
 # different catalogue: one directory for both would have a forced rebuild of
 # either quietly overwrite the other with a matrix of the wrong articles.
 WORK_DIR = "predict"
+
+# The stages a submission's wall time divides into, in the order a chunk
+# passes through them. `read` and `write` are this module's; `features`,
+# `nrms` and `gbdt` are filled by the ranker itself through
+# `features.measured`, and a retriever that keeps no breakdown reports its
+# ranking whole under `rank`.
+#
+# `rank` is the total of the three above it, not a sixth stage beside them --
+# which is why it is reported last and labelled. The note needs to be able to
+# say *which* stage breaks first at 10x, and a breakdown that did not sum to
+# the thing it breaks down would not support that claim.
+STAGES = ("read", "features", "nrms", "gbdt", "rank", "write")
+
+# Chunk sizes the cost of a run is measured at before the run. Three points is
+# enough for the shape: too small and the per-chunk fixed cost dominates, too
+# large and the histories a chunk carries take the node out. A1's lesson was
+# that the second is what actually happens, so the largest size that fits with
+# headroom is the one submitted -- and the row that chose it is in the ledger.
+BENCH_CHUNKS = (50_000, 200_000, 500_000)
 
 
 class SubmissionError(RuntimeError):
@@ -315,11 +346,34 @@ def ranks(candidates: list[str], ranked: list[str]) -> list[int]:
     return order
 
 
+def build_ranker(
+    config: DatasetConfig,
+    retriever: str,
+    articles: pd.DataFrame,
+    workdir: Path,
+    history_k: int,
+    device: str | None = None,
+):
+    """The named retriever over the competition's catalogue.
+
+    `device` reaches only the two retrievers that have one. Giving all five a
+    parameter that means nothing to three of them would be a wider interface
+    for a narrower reason, and a `--device` silently ignored by BM25 is worse
+    than one that is simply not passed to it.
+    """
+    module = evaluate.RETRIEVERS[retriever]
+    extra = {}
+    if device is not None and "device" in inspect.signature(module.ranker).parameters:
+        extra["device"] = device
+    return module.ranker(articles, config, workdir, history_k, **extra)
+
+
 def write(
     config: DatasetConfig,
     retriever: str = DEFAULT_RETRIEVER,
     history_k: int = retrieval.HISTORY_K,
     chunk_size: int = CHUNK,
+    device: str | None = None,
 ) -> tuple[Path, dict[str, int]]:
     """Rank every test impression and write the prediction file.
 
@@ -332,9 +386,10 @@ def write(
     articles = catalogue(config)
     print(f"    {len(articles):,} articles in the competition catalogue")
 
-    module = evaluate.RETRIEVERS[retriever]
     workdir = config.artifacts_dir / WORK_DIR
-    rank_with = module.ranker(articles, config, workdir, history_k)
+    rank_with = build_ranker(
+        config, retriever, articles, workdir, history_k, device
+    )
 
     destination = (
         paths.PREDICTIONS_DIR
@@ -347,36 +402,53 @@ def write(
     expected = source_rows(config)
     seen: set[str] = set()
     report = {"impressions": 0, "cold": 0, "flat": 0, "candidates": 0, "repeated": 0}
+    # The ranker's own breakdown, if it keeps one, so the stages it measures
+    # inside a chunk and the stages measured around it land in one dict.
+    cost: dict[str, float] = getattr(rank_with, "cost", {})
+    # Resident megabytes after each chunk. First and last are what say whether
+    # the run is streaming: a path that accumulates anything shows it here and
+    # nowhere else, because a leaderboard file from a run that grew is exactly
+    # as correct as one from a run that did not.
+    resident: list[float] = []
     started = time.perf_counter()
 
     with partial.open("w", encoding="utf-8") as handle:
         progress = tqdm(total=expected, unit="impression", desc="    ranking")
-        for chunk in impressions(config, chunk_size, history_k):
+        stream = impressions(config, chunk_size, history_k)
+        while True:
+            with features.measured(cost, "read"):
+                chunk = next(stream, None)
+            if chunk is None:
+                break
             candidates = list(chunk["candidate_ids"])
-            ranked = rank_with.rank(chunk, candidates)
+            with features.measured(cost, "rank"):
+                ranked = rank_with.rank(chunk, candidates)
             _check_alignment(chunk, ranked)
 
-            for impression_id, given, order, scores in zip(
-                chunk["impression_id"], candidates, ranked["ranked_ids"],
-                ranked["scores"], strict=True,
-            ):
-                if impression_id == spec.repeated_impression_id:
-                    report["repeated"] += 1
-                elif impression_id in seen:
-                    raise SubmissionError(
-                        f"impression {impression_id} appears twice in "
-                        f"{spec.impressions.files}"
-                    )
-                else:
-                    seen.add(impression_id)
-                handle.write(spec.line(impression_id, ranks(given, order)) + "\n")
-                report["candidates"] += len(given)
-                # A ranking whose scores are all equal is the candidate file's
-                # own order coming back out. Counted rather than hidden: it is
-                # the share of the leaderboard score this system did not earn.
-                report["flat"] += len(set(scores)) <= 1
+            with features.measured(cost, "write"):
+                for impression_id, given, order, scores in zip(
+                    chunk["impression_id"], candidates, ranked["ranked_ids"],
+                    ranked["scores"], strict=True,
+                ):
+                    if impression_id == spec.repeated_impression_id:
+                        report["repeated"] += 1
+                    elif impression_id in seen:
+                        raise SubmissionError(
+                            f"impression {impression_id} appears twice in "
+                            f"{spec.impressions.files}"
+                        )
+                    else:
+                        seen.add(impression_id)
+                    handle.write(spec.line(impression_id, ranks(given, order)) + "\n")
+                    report["candidates"] += len(given)
+                    # A ranking whose scores are all equal is the candidate
+                    # file's own order coming back out. Counted rather than
+                    # hidden: it is the share of the leaderboard score this
+                    # system did not earn.
+                    report["flat"] += len(set(scores)) <= 1
             report["cold"] += int(chunk["click_history"].map(len).eq(0).sum())
             report["impressions"] += len(chunk)
+            resident.append(timings.resident_mb())
             progress.update(len(chunk))
         progress.close()
 
@@ -390,6 +462,11 @@ def write(
 
     partial.replace(destination)
     report["seconds"] = round(time.perf_counter() - started)
+    report["cost"] = dict(cost)
+    report["chunk_size"] = chunk_size
+    report["first_rss_mb"] = resident[0] if resident else None
+    report["last_rss_mb"] = resident[-1] if resident else None
+    report["peak_rss_mb"] = max(resident) if resident else None
     return destination, report
 
 
@@ -405,6 +482,155 @@ def _check_alignment(chunk: pd.DataFrame, ranked: pd.DataFrame) -> None:
             "the retriever returned rankings for a different set of "
             "impressions, or in a different order, than it was given"
         )
+
+
+# ---------------------------------------------------------------------------
+# What the run cost, per stage.
+
+
+def stage_rows(report: dict) -> list[tuple[str, float, float]]:
+    """`(stage, seconds, impressions per second)` for the stages measured.
+
+    In `STAGES` order rather than the dict's, so two runs' tables can be read
+    side by side, and only for stages this retriever actually kept: a
+    breakdown with an empty `nrms` row would suggest the stage ran and cost
+    nothing.
+    """
+    seen = report["impressions"]
+    rows = []
+    for stage in STAGES:
+        seconds = report.get("cost", {}).get(stage)
+        if seconds is None:
+            continue
+        rows.append((stage, seconds, seen / seconds if seconds > 0 else float("nan")))
+    return rows
+
+
+def cost_lines(report: dict) -> list[str]:
+    """The per-stage table, for the run's own output."""
+    lines = [f"    {'stage':<10}{'seconds':>12}{'rows/s':>12}{'share':>8}"]
+    total = report["seconds"] or 1
+    for stage, seconds, per_second in stage_rows(report):
+        share = "" if stage == "rank" else f"{100 * seconds / total:>7.1f}%"
+        label = "rank*" if stage == "rank" else stage
+        lines.append(f"    {label:<10}{seconds:>12,.1f}{per_second:>12,.0f}{share:>8}")
+    if any(stage == "rank" for stage, _, _ in stage_rows(report)):
+        lines.append("    * rank is the total of the stages above it, not a stage beside them")
+    return lines
+
+
+def record_cost(
+    config: DatasetConfig, retriever: str, report: dict, split: str = "test"
+) -> list[dict]:
+    """One ledger row for the run and one per stage it measured.
+
+    The functional side of these rows stays blank on purpose: the leaderboard
+    holds the labels, so nothing here can score itself, and the number that
+    fills that half arrives from CodaBench rather than from this process. The
+    engineering side is the whole point of the row -- the per-stage rows/s are
+    what ticket 09's 10x argument multiplies out, and it cannot say which
+    stage breaks first from a single total.
+    """
+    chunk_size = report.get("chunk_size", CHUNK)
+    # Thousands only where the size is exactly that many, so two sizes never
+    # round to one variant name and quietly replace each other's ledger row.
+    size = f"{chunk_size // 1000}k" if chunk_size % 1000 == 0 else str(chunk_size)
+    base = f"{retriever}@{size}"
+    first, last = report.get("first_rss_mb"), report.get("last_rss_mb")
+    flat = (
+        f"rss {first:,.0f} MB at the first chunk, {last:,.0f} MB at the last"
+        if first is not None and last is not None
+        else "rss not sampled"
+    )
+    written = [
+        ledger.record(
+            {
+                "dataset": config.name,
+                "stage": "submit",
+                "variant": base,
+                "split": split,
+                "rows_per_s": round(report["impressions"] / report["seconds"], 1)
+                if report["seconds"]
+                else None,
+                "peak_rss_mb": report.get("peak_rss_mb"),
+                "train_seconds": report["seconds"],
+                "note": (
+                    f"{report['impressions']:,} impressions, "
+                    f"{report['candidates']:,} candidates; {flat}"
+                ),
+            }
+        )
+    ]
+    for stage, seconds, per_second in stage_rows(report):
+        written.append(
+            ledger.record(
+                {
+                    "dataset": config.name,
+                    "stage": "submit",
+                    "variant": f"{base}:{stage}",
+                    "split": split,
+                    "rows_per_s": round(per_second, 1),
+                    "train_seconds": round(seconds, 1),
+                    "note": "total of the three stages above it"
+                    if stage == "rank"
+                    else f"{stage} stage of the {base} submission run",
+                }
+            )
+        )
+    return written
+
+
+def bench_chunks(
+    config: DatasetConfig,
+    retriever: str = DEFAULT_RETRIEVER,
+    sizes: tuple[int, ...] = BENCH_CHUNKS,
+    history_k: int = retrieval.HISTORY_K,
+    device: str | None = None,
+) -> list[dict]:
+    """Rank the *first* chunk at each size and record what each one cost.
+
+    Before the full run, not after it: the point is to choose the size the run
+    uses, and a size chosen after the run is a size that was not chosen. The
+    catalogue and the ranker are built once and reused across sizes, so what
+    differs between the rows is the chunk and nothing else.
+
+    Only the first chunk of each size is ranked, and nothing is written -- this
+    produces no submission file, and says so by returning ledger rows instead
+    of a path.
+    """
+    articles = catalogue(config)
+    workdir = config.artifacts_dir / WORK_DIR
+    rank_with = build_ranker(config, retriever, articles, workdir, history_k, device)
+    rows = []
+    for size in sizes:
+        cost = getattr(rank_with, "cost", {})
+        cost.clear()
+        with timings.sample() as sampled:
+            chunk = next(impressions(config, size, history_k), None)
+            if chunk is None:
+                break
+            ranked = rank_with.rank(chunk, list(chunk["candidate_ids"]))
+            _check_alignment(chunk, ranked)
+        report = {
+            "impressions": len(chunk),
+            "candidates": int(chunk["candidate_ids"].map(len).sum()),
+            "seconds": sampled["seconds"],
+            "peak_rss_mb": round(sampled["peak_rss_mb"], 1),
+            "first_rss_mb": sampled["entry_rss_mb"],
+            "last_rss_mb": sampled["peak_rss_mb"],
+            "chunk_size": size,
+            "cost": dict(cost),
+        }
+        print(f"    chunk {size:,}: " + "; ".join(
+            f"{stage} {per_second:,.0f} rows/s"
+            for stage, _, per_second in stage_rows(report)
+        ) + f"; peak {report['peak_rss_mb']:,.0f} MB")
+        rows.extend(record_cost(config, f"{retriever}-bench", report))
+        if len(chunk) < size:
+            # The file ran out before the size did, so every larger size would
+            # measure the same chunk again under a different name.
+            break
+    return rows
 
 
 def label_for(
@@ -482,6 +708,7 @@ def submit(
     history_k: int = retrieval.HISTORY_K,
     chunk_size: int = CHUNK,
     force: bool = False,
+    device: str | None = None,
 ) -> Path:
     spec = config.submission
     archive = bundle_for(config, retriever, history_k)
@@ -490,7 +717,7 @@ def submit(
         return archive
 
     acquire.ensure(config, spec.archives, spec.expected_files, spec.token_env)
-    prediction, report = write(config, retriever, history_k, chunk_size)
+    prediction, report = write(config, retriever, history_k, chunk_size, device)
     archive = bundle(prediction, config, retriever, history_k)
 
     total = report["impressions"]
@@ -510,6 +737,9 @@ def submit(
             f"    {report['repeated']:,} carry the competition's repeated id "
             f"{spec.repeated_impression_id!r} and are matched by row, not by id"
         )
+    for line in cost_lines(report):
+        print(line)
+    record_cost(config, retriever, report)
     print(f"    {archive} -> upload at {spec.competition_url}")
     return archive
 
@@ -555,6 +785,19 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="rebuild even if the submission archive is already there",
     )
+    parser.add_argument(
+        "--device",
+        help="torch device the NRMS half scores on, where the retriever has "
+        "one; the other retrievers are not given the argument at all",
+    )
+    parser.add_argument(
+        "--bench-chunks",
+        nargs="?",
+        const=",".join(str(size) for size in BENCH_CHUNKS),
+        help="rank only the first chunk at each of these sizes and record what "
+        "each cost, instead of writing a submission — the measurement that "
+        "chooses --chunk for the full run",
+    )
     args = parser.parse_args(argv)
     paths.load_env_file()
 
@@ -577,7 +820,23 @@ def main(argv: list[str] | None = None) -> int:
                 f"registry's {DATASETS[name].weighting.scheme!r} — a different "
                 f"model from the one every reported number was measured under"
             )
-        submit(config, args.retriever, args.history_k, args.chunk, args.force)
+        if args.bench_chunks:
+            bench_chunks(
+                config,
+                args.retriever,
+                tuple(int(size) for size in args.bench_chunks.split(",")),
+                args.history_k,
+                args.device,
+            )
+            continue
+        submit(
+            config,
+            args.retriever,
+            args.history_k,
+            args.chunk,
+            args.force,
+            args.device,
+        )
     return 0
 
 

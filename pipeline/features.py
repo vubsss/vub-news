@@ -260,9 +260,15 @@ def columns_for(groups) -> tuple[str, ...]:
 
 
 @contextmanager
-def _measured(cost: dict[str, float], family: str):
+def measured(cost: dict[str, float], family: str):
     """Add a block's wall seconds to `cost[family]`, so the note can say which
-    feature family is the expensive one rather than only what the frame took."""
+    feature family is the expensive one rather than only what the frame took.
+
+    Public because the submission path times its own stages -- read, features,
+    nrms, gbdt, write -- into a dict of the same shape, and two accumulators
+    that round differently would make the per-stage table and the total
+    disagree about the same run.
+    """
     started = time.perf_counter()
     try:
         yield
@@ -319,6 +325,11 @@ def session_counts(behaviors: pd.DataFrame) -> pd.DataFrame:
     `session_id` already has in the feature store.
     """
     ids = behaviors["impression_id"].to_numpy()
+    # A log with no labels is the competition's test file: how many of a
+    # session's earlier impressions were clicked is exactly what it is holding
+    # back, so that column is unknown rather than zero. The count of earlier
+    # impressions is not -- the server saw those.
+    known = "labels" in behaviors
     impressions_before = np.full(len(behaviors), np.nan)
     clicks_before = np.full(len(behaviors), np.nan)
     counted = pd.DataFrame(
@@ -328,18 +339,23 @@ def session_counts(behaviors: pd.DataFrame) -> pd.DataFrame:
         },
         index=pd.Index(ids, name="impression_id"),
     )
-    if behaviors["session_id"].isna().all():
+    if "session_id" not in behaviors or behaviors["session_id"].isna().all():
         return counted
 
     moments = behaviors["impression_time"].to_numpy("datetime64[us]")
-    clicked = behaviors["labels"].map(lambda labels: int(np.sum(labels))).to_numpy()
+    clicked = (
+        behaviors["labels"].map(lambda labels: int(np.sum(labels))).to_numpy()
+        if known
+        else np.zeros(len(behaviors), dtype="int64")
+    )
     for positions in behaviors.groupby("session_id", dropna=True).indices.values():
         order = positions[np.argsort(moments[positions], kind="stable")]
         times = moments[order]
         before = np.searchsorted(times, times, side="left")
         running = np.concatenate([[0], np.cumsum(clicked[order])])
         impressions_before[order] = before
-        clicks_before[order] = running[before]
+        if known:
+            clicks_before[order] = running[before]
     counted["session_impressions"] = impressions_before
     counted["session_clicks"] = clicks_before
     return counted
@@ -362,6 +378,54 @@ def load(config: DatasetConfig, behaviors: pd.DataFrame) -> Loaded:
         ),
         counts=counters.load(config.artifacts_dir / counters.DIRECTORY),
         sessions=session_counts(behaviors),
+    )
+
+
+def for_submission(
+    config: DatasetConfig,
+    articles: pd.DataFrame,
+    embeddings: embed.Embeddings,
+    test_impressions: pd.DataFrame,
+) -> Loaded:
+    """The same context, over the competition's catalogue and the test log.
+
+    Every field means what it means offline; only where it comes from differs,
+    which is what keeps the submission on one frame builder:
+
+    - the vectors are the competition's, corrected as the retriever corrected
+      them, because the feature store's artifact barely covers its catalogue;
+    - the article maps are the competition's own `articles.parquet`;
+    - the counters are `counters.ServingCounters` -- the training log frozen,
+      the test log's exposures read strictly before `t`, and the clicks a test
+      user's history reveals -- behind the same `at` and `first_seen`;
+    - the session counts come from the test log, with the click side unknown
+      because the leaderboard holds the labels back.
+    """
+    from pipeline import counters as counter_store
+
+    trained = counter_store.load(config.artifacts_dir / counter_store.DIRECTORY)
+    histories = (
+        test_impressions["click_history"]
+        if "click_history" in test_impressions
+        else []
+    )
+    clicked_ids, clicked_counts = counter_store.clicks_in_histories(histories)
+    return Loaded(
+        embeddings=embeddings,
+        category=_keyed(articles, "category"),
+        subcategory=_keyed(articles, "subcategory"),
+        published=(
+            _keyed(articles, "published_time")
+            if config.columns.articles["published_time"]
+            else None
+        ),
+        counts=counter_store.ServingCounters(
+            trained=trained,
+            shown=counter_store.exposures_only(test_impressions),
+            clicked_ids=clicked_ids,
+            clicked_counts=clicked_counts,
+        ),
+        sessions=session_counts(test_impressions),
     )
 
 
@@ -622,6 +686,33 @@ def engagement_columns(history: pd.DataFrame, history_k: int) -> dict[str, np.nd
 # The frame.
 
 
+# What a submission's label column holds. The leaderboard is holding the
+# outcomes back, so a submission frame's rows are neither clicked nor not
+# clicked -- and a zero would say "not clicked", which is a claim about data
+# nobody has. Nothing in scoring reads the column; it is in the frame because
+# the frame has one schema.
+UNKNOWN_LABEL = -1
+
+
+def module_scorers(config: DatasetConfig, history_k: int) -> dict:
+    """The offline scorers: each retriever over the feature store's own index.
+
+    `frame_for` takes these as an argument so the submission can pass its own
+    -- rankers built over the competition's catalogue -- and still go through
+    one frame builder. A second builder for the submission would be the same
+    forty columns written twice, and the failure it would produce is a model
+    served features that are subtly not the ones it was trained on.
+    """
+    return {
+        name: (
+            lambda chunk, history, module=module: module.rank_candidates(
+                config, chunk, history, history_k
+            )
+        )
+        for name, module in SCORERS.items()
+    }
+
+
 def frame_for(
     config: DatasetConfig,
     chunk: pd.DataFrame,
@@ -631,19 +722,28 @@ def frame_for(
     causal: bool = True,
     history_k: int = retrieval.HISTORY_K,
     cost: dict[str, float] | None = None,
+    scorers: dict | None = None,
 ) -> pd.DataFrame:
     """One chunk of impressions as rows of (impression, candidate).
 
     `chunk` and `history` are positionally paired -- row i of one is row i of
     the other -- which is what `ingest.history_for` returns and what
     `cosine_columns` asserts before it uses either.
+
+    A chunk with no `labels` column is a submission chunk: its rows carry
+    `UNKNOWN_LABEL` rather than a zero.
     """
     cost = {} if cost is None else cost
+    scorers = module_scorers(config, history_k) if scorers is None else scorers
     lengths = chunk["candidate_ids"].map(len).to_numpy()
     article_ids = np.concatenate(
         [np.asarray(ids, dtype=object) for ids in chunk["candidate_ids"]]
     )
-    labels = np.concatenate([np.asarray(values) for values in chunk["labels"]])
+    labels = (
+        np.concatenate([np.asarray(values) for values in chunk["labels"]])
+        if "labels" in chunk
+        else np.full(len(article_ids), UNKNOWN_LABEL)
+    )
     moments = np.repeat(chunk["impression_time"].to_numpy("datetime64[us]"), lengths)
 
     frame = pd.DataFrame(
@@ -656,19 +756,20 @@ def frame_for(
         }
     )
 
-    with _measured(cost, "retrievers"):
-        for name, module in SCORERS.items():
-            ranked = module.rank_candidates(config, chunk, history, history_k)
-            frame[f"{name}_score"], frame[f"{name}_rank"] = read_back(ranked, chunk)
+    with measured(cost, "retrievers"):
+        for name, scorer in scorers.items():
+            frame[f"{name}_score"], frame[f"{name}_rank"] = read_back(
+                scorer(chunk, history), chunk
+            )
     frame["n_candidates"] = np.repeat(lengths.astype("float64"), lengths)
 
-    with _measured(cost, "categories"):
+    with measured(cost, "categories"):
         for name, values in category_columns(
             chunk, history, loaded, article_ids, history_k
         ).items():
             frame[name] = values
 
-    with _measured(cost, "profiles"):
+    with measured(cost, "profiles"):
         frame["n_clicks"] = np.repeat(
             history["n_clicks"].to_numpy(dtype="float64"), lengths
         )
@@ -683,13 +784,13 @@ def frame_for(
         for name, values in engagement_columns(history, history_k).items():
             frame[name] = np.repeat(values, lengths)
 
-    with _measured(cost, "counters"):
+    with measured(cost, "counters"):
         for name, values in counter_columns(
             loaded, article_ids, moments, causal
         ).items():
             frame[name] = values
 
-    with _measured(cost, "sessions"):
+    with measured(cost, "sessions"):
         sessions = loaded.sessions.reindex(chunk["impression_id"].to_numpy())
         for name in ("session_impressions", "session_clicks"):
             frame[name] = np.repeat(sessions[name].to_numpy("float64"), lengths)

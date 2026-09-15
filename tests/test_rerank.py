@@ -21,6 +21,7 @@ from pipeline import (
     nrms,
     paths,
     rerank,
+    retrieval,
 )
 from pipeline.datasets import DATASETS, NrmsSpec, RerankSpec
 
@@ -499,12 +500,174 @@ def test_a_pooling_it_does_not_have_is_refused(store, small):
         rerank.rank_candidates(MIND, impressions, history, pooling="max")
 
 
-def test_the_submission_ranker_refuses_to_invent_the_test_periods_features(store, small):
+# --- the submission path ----------------------------------------------------
+#
+# The competition is a later period over its own catalogue, so the submission
+# assembles a frame the feature store cannot answer for. What these check is
+# that it is the *same* frame -- same columns, same builder, same code path --
+# because a model served forty columns that are subtly not the ones it was
+# trained on produces a well-formed leaderboard file and a meaningless score.
+
+
+COMPETITION_NEWS = "".join(
+    f"{article}\t{category}\t{sub}\theadline {category}\t\t"
+    f"https://example.com\t[]\t[]\n"
+    for article, category, sub, _ in ARTICLES
+)
+
+# Two impressions a week after the feature store's log ends: one from a user
+# the training period knows, one from a stranger with no history at all.
+COMPETITION_BEHAVIORS = (
+    "s1\tu0\t11/20/2019 9:00:00 AM\ta1 a3\ta2 a4 a6\n"
+    "s2\tu9\t11/20/2019 9:05:00 AM\t\ta1 a5\n"
+)
+
+
+@pytest.fixture
+def competition(store, monkeypatch):
+    """The competition's own test files on disk, over the same six articles.
+
+    The same six on purpose: what these tests are about is the frame, not the
+    vector alignment `test_predict` already covers at length, so the
+    catalogue's vectors are the store's own rather than a re-encoding. That
+    substitution is `for_corpus`'s whole job and is stubbed here rather than
+    exercised, which keeps a failure in one of these tests pointing at the
+    submission frame.
+    """
+    monkeypatch.setattr(paths, "RAW_DIR", store / "raw")
+    monkeypatch.setattr(paths, "PREDICTIONS_DIR", store / "predictions")
+    test_dir = MIND.raw_dir / "test"
+    test_dir.mkdir(parents=True)
+    (test_dir / "news.tsv").write_text(COMPETITION_NEWS, encoding="utf-8")
+    (test_dir / "behaviors.tsv").write_text(COMPETITION_BEHAVIORS, encoding="utf-8")
+
+    def stored_vectors(articles, config, directory):
+        stored = embed.load(config)
+        where = {article: row for row, article in enumerate(stored.article_ids)}
+        ids = articles["article_id"].to_numpy(dtype=object)
+        return (
+            embed.Embeddings(
+                vectors=stored.vectors[[where[article] for article in ids]],
+                article_ids=ids,
+            ),
+            {
+                "articles": len(ids),
+                "cached": 1,
+                "encoded": 0,
+                "from_artifact": len(ids),
+                "missing": 0,
+            },
+        )
+
+    monkeypatch.setattr(embed, "for_corpus", stored_vectors)
+    return store
+
+
+def submission_ranker(store, **keywords):
+    """The trained arm over the competition's catalogue."""
+    from pipeline import predict
+
     write_store()
     rerank.fit_one(MIND, SMALL_RERANK)
-    articles = pd.read_parquet(MIND.feature_store_dir / "articles.parquet")
-    with pytest.raises(rerank.RerankError, match="ticket 08"):
-        rerank.ranker(articles, MIND, store)
+    return rerank.ranker(
+        predict.catalogue(MIND), MIND, store / "work", SMALL_NRMS.history_length,
+        **keywords,
+    )
+
+
+def test_the_submission_frame_is_the_frame_the_model_was_trained_on(
+    competition, small
+):
+    """One builder, so the served columns are the trained columns in the
+    trained order. A submission assembled by a second implementation would
+    differ first in column order, which LightGBM reads positionally."""
+    from pipeline import predict
+
+    ranker = submission_ranker(competition)
+    chunk = next(predict.impressions(MIND, history_k=SMALL_NRMS.history_length))
+    frame = ranker.build_frame(chunk)
+
+    assert list(frame.columns) == [*features.COLUMNS, rerank.NRMS_COLUMN]
+    assert set(rerank.feature_columns(SMALL_RERANK)) <= set(frame.columns)
+    assert set(frame["article_id"]) == {"a1", "a2", "a4", "a5", "a6"}
+
+
+def test_the_submission_frame_says_the_labels_are_unknown(competition, small):
+    """Not zero. A zero in the label column is the claim that nobody clicked,
+    which is precisely the thing the leaderboard is holding back."""
+    from pipeline import predict
+
+    ranker = submission_ranker(competition)
+    chunk = next(predict.impressions(MIND, history_k=SMALL_NRMS.history_length))
+    frame = ranker.build_frame(chunk)
+
+    assert (frame["label"] == features.UNKNOWN_LABEL).all()
+
+
+def test_the_submission_and_the_harness_are_one_code_path(competition, small):
+    """The A1 self-consistency check, applied to the fifth retriever.
+
+    Handed the offline frame, the submission's `Ranker` must produce exactly
+    what `rank_candidates` produces -- same order, same scores. The two differ
+    in where the frame comes from and in nothing else, and this is what says
+    so; a divergence here is the id-collision class of bug, which is invisible
+    in every metric because both sides still rank something.
+    """
+    write_store()
+    rerank.fit_one(MIND, SMALL_RERANK)
+    behaviors = pd.read_parquet(MIND.feature_store_dir / "behaviors.parquet")
+    impressions = behaviors[behaviors["split"] == "validation"].reset_index(drop=True)
+    history = ingest.history_for(MIND, impressions)
+
+    harness = rerank.rank_candidates(MIND, impressions, history)
+
+    whole = pd.read_parquet(MIND.feature_store_dir / "behaviors.parquet")
+    loaded = features.load(MIND, whole)
+    nrms_scores = rerank.nrms_scores(MIND, "validation")
+    served = rerank.Ranker(
+        booster=rerank.load_model(MIND, SMALL_RERANK),
+        spec=SMALL_RERANK,
+        config=MIND,
+        history_k=retrieval.HISTORY_K,
+        build_frame=lambda chunk, candidates=None: rerank.with_nrms(
+            features.frame_for(
+                MIND, chunk, history, loaded, causal=SMALL_RERANK.causal
+            ),
+            nrms_scores,
+        ),
+    ).rank(impressions, list(impressions["candidate_ids"]))
+
+    assert list(served["impression_id"]) == list(harness["impression_id"])
+    for mine, theirs in zip(served["scores"], harness["scores"]):
+        assert np.allclose(list(mine), list(theirs))
+
+
+def test_a_top_k_cut_is_an_ablation_row_and_not_a_submission(competition, small, monkeypatch):
+    """The one thing the submission path still refuses. A cut is a measurement
+    of what stage one costs; a leaderboard file produced under it would not be
+    the configuration any reported number came from."""
+    monkeypatch.setattr(
+        MIND.__class__,
+        "rerank",
+        property(lambda self: dataclasses.replace(SMALL_RERANK, top_k=2)),
+        raising=False,
+    )
+    with pytest.raises(rerank.RerankError, match="ablation row"):
+        submission_ranker(competition)
+
+
+def test_the_submission_ranker_times_its_own_stages(competition, small):
+    """Ticket 08's per-stage rows/s has to come from inside the ranker: `predict`
+    can time the ranking, but only the ranker can say how much of it was the
+    frame and how much was the two models."""
+    from pipeline import predict
+
+    ranker = submission_ranker(competition)
+    chunk = next(predict.impressions(MIND, history_k=SMALL_NRMS.history_length))
+    ranker.rank(chunk, list(chunk["candidate_ids"]))
+
+    assert set(ranker.cost) == {"features", "nrms", "gbdt"}
+    assert all(seconds > 0 for seconds in ranker.cost.values())
 
 
 # --- the headline and the ledger --------------------------------------------

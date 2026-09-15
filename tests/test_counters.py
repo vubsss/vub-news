@@ -194,3 +194,125 @@ def test_the_stage_refuses_a_log_without_the_bench_split(tmp_path, monkeypatch):
     FOUR.to_parquet(MIND.feature_store_dir / "behaviors.parquet", index=False)
     with pytest.raises(counters.CounterError):
         counters.run(MIND)
+
+
+# --- what a server knows at submission time ---------------------------------
+#
+# The competition is a later period, so the counters a submission reads come
+# from three places at once and one of them is a log whose outcomes nobody has.
+# These are the tests that say the three are combined the way a live server's
+# would be, rather than the way that scores best.
+
+
+TEST_LOG = log(
+    [
+        (300, ["A", "B"], [0, 0]),
+        (400, ["A", "C"], [0, 0]),
+        (500, ["B", "C", "E"], [0, 0, 0]),  # E: an article only the test week carries
+    ],
+    split="test",
+)
+
+# Two test users whose reading histories mention A twice and D once. These are
+# clicks a server genuinely knows happened -- the competition ships them -- and
+# they carry no timestamp, which is why they count cumulatively and nowhere
+# else.
+TEST_HISTORIES = [["A", "D"], ["A"]]
+
+
+def serving() -> counters.ServingCounters:
+    ids, counts = counters.clicks_in_histories(TEST_HISTORIES)
+    return counters.ServingCounters(
+        trained=counters.build(FOUR),
+        shown=counters.exposures_only(TEST_LOG),
+        clicked_ids=ids,
+        clicked_counts=counts,
+    )
+
+
+def test_the_training_period_is_read_whole_because_it_is_all_before():
+    """Every training impression precedes every test one, so a test-time read
+    sees the training log entire -- not because the window was widened but
+    because `t` is later than all of it."""
+    whole = counters.build(FOUR).at(["A", "B"], T0 + pd.Timedelta(minutes=300))
+    served = serving().at(["A", "B"], T0 + pd.Timedelta(minutes=300))
+
+    assert list(served.exposures) == list(whole.exposures)
+
+
+def test_a_test_impression_sees_earlier_test_exposures_and_no_later_ones():
+    """The strictness that makes this the 'what a live server knows' line: the
+    impression at minute 400 counts the one at 300 and not the one at 500."""
+    at_400 = serving().at(["A", "B", "C"], T0 + pd.Timedelta(minutes=400))
+    at_500 = serving().at(["A", "B", "C"], T0 + pd.Timedelta(minutes=500))
+
+    # A: 3 training exposures + 1 test exposure at minute 300.
+    assert at_400.exposures[0] == 4
+    # C: only the training one at minute 10 until minute 500 adds nothing yet.
+    assert at_400.exposures[2] == 1
+    # By minute 500 the impression at 400 has been counted, and its own has not.
+    assert at_500.exposures[2] == 2
+
+
+def test_no_click_of_the_test_period_is_ever_counted():
+    """The leaderboard is holding the outcomes back, so the only clicks a
+    submission can count are the ones the histories reveal. An implementation
+    that inferred a click from an exposure would show up here."""
+    served = serving()
+    late = served.at(["A", "B", "C"], T0 + pd.Timedelta(minutes=600))
+    trained = counters.build(FOUR).at(["A", "B", "C"], T0 + pd.Timedelta(minutes=600))
+
+    # B and C gain exposures from the test log and no clicks at all.
+    assert served.at(["B"], T0 + pd.Timedelta(minutes=600)).exposures[0] > trained.exposures[1]
+    assert late.clicks[1] == trained.clicks[1]
+    assert late.clicks[2] == trained.clicks[2]
+
+
+def test_a_history_click_counts_cumulatively_and_in_no_window():
+    """A click with no timestamp cannot be placed in an hour. Counting it in
+    one would be inventing the moment it happened; leaving it out of the
+    cumulative counter would be discarding a click the server has."""
+    served = serving()
+    t = T0 + pd.Timedelta(minutes=600)
+    trained = counters.build(FOUR)
+
+    cumulative = served.at(["A"], t).clicks[0]
+    windowed = served.at(["A"], t, pd.Timedelta(hours=1)).clicks[0]
+
+    assert cumulative == trained.at(["A"], t).clicks[0] + 2  # both histories
+    assert windowed == trained.at(["A"], t, pd.Timedelta(hours=1)).clicks[0]
+
+
+def test_an_article_only_the_test_period_has_shown_is_as_old_as_its_first_test_view():
+    """Freshness is the earlier of the two logs' first sightings. An article
+    the training week never carried is not ageless; it is as old as the first
+    test impression that showed it."""
+    served = serving()
+    t = T0 + pd.Timedelta(minutes=600)
+    first = served.first_seen(["A", "E"], t)
+
+    # A was first shown at minute 0, in the training log, which is earlier than
+    # any test view of it -- so the training log wins.
+    assert first[0] == np.datetime64(T0.to_datetime64())
+    # E appears in neither training impression, so its age is the test log's.
+    assert first[1] == np.datetime64((T0 + pd.Timedelta(minutes=500)).to_datetime64())
+
+
+def test_an_article_neither_log_has_shown_has_no_first_sighting():
+    served = serving()
+    assert pd.isna(served.first_seen(["Z"], T0 + pd.Timedelta(minutes=600))[0])
+
+
+def test_the_histories_are_counted_once_per_appearance():
+    ids, counts = counters.clicks_in_histories(TEST_HISTORIES)
+    assert dict(zip(ids, counts)) == {"A": 2, "D": 1}
+
+
+def test_a_log_with_no_outcomes_contributes_exposures_and_nothing_else():
+    """`exposures_only` is handed all-zero labels rather than being a second
+    constructor, so there is one definition of what an exposure is."""
+    store = counters.exposures_only(TEST_LOG)
+    late = store.at(["A", "B", "C"], T0 + pd.Timedelta(minutes=600))
+
+    assert list(late.exposures) == [2, 2, 2]  # A, B, C once each in two rows
+    assert list(late.clicks) == [0, 0, 0]

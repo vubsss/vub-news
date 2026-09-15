@@ -171,14 +171,29 @@ def mind_test_impressions(raw: pd.DataFrame) -> pd.DataFrame:
     both rather than joining two adapters back together per chunk.
 
     The timestamp comes through for parity with the EB-NeRD adapter below,
-    which reads one from its own file. Neither retriever looks at it: it costs
-    one column and keeps both competitions' test impressions the same shape.
+    which reads one from its own file. The A1 retrievers do not look at it; the
+    A2 feature frame does -- every counter it reads is read strictly before
+    this moment -- so it is the column that makes a causal submission possible
+    rather than a courtesy.
+
+    `session_id` is null here as it is everywhere else on MIND, which the
+    registry already says: a dataset with no sessions carries the column empty
+    rather than not at all, so the submission's frame has the same shape as the
+    offline one and no stage asks which competition it is serving.
     """
     return pd.DataFrame(
         {
             "impression_id": raw["impression_id"].astype(str),
             "user_id": raw["user_id"].astype(str),
             "impression_time": pd.to_datetime(raw["time"], format="%m/%d/%Y %I:%M:%S %p"),
+            # On `raw`'s own index: a chunked read hands this adapter rows
+            # numbered from where the chunk started, and a Series built with a
+            # fresh 0..n index would be *aligned* against those rather than
+            # placed beside them -- which turns one chunk into two rows of
+            # nulls and is well-formed the whole way down.
+            "session_id": pd.Series(
+                [None] * len(raw), dtype="string", index=raw.index
+            ),
             "candidate_ids": raw["impressions"].str.split(),
             "click_history": raw["history"].fillna("").str.split(),
         }
@@ -193,12 +208,20 @@ def ebnerd_test_impressions(raw: pd.DataFrame) -> pd.DataFrame:
     it is what the leaderboard is holding back. No history here either, unlike
     MIND's test adapter, because EB-NeRD ships it as a separate table that the
     submission spec names and `predict` joins on.
+
+    `session_id` comes through as it does for the training behaviours, because
+    the re-ranker's session features are fitted on it and a submission that
+    served them as null would be handing the model a column it has never seen
+    empty. If a later test release drops the column this raises on the first
+    chunk, which is the right failure: the alternative is a leaderboard file
+    ranked by a model reading nulls where it was trained on counts.
     """
     return pd.DataFrame(
         {
             "impression_id": raw["impression_id"].astype(str),
             "user_id": raw["user_id"].astype(str),
             "impression_time": pd.to_datetime(raw["impression_time"]),
+            "session_id": raw["session_id"].astype(str),
             "candidate_ids": raw["article_ids_inview"].map(
                 lambda ids: [str(i) for i in ids]
             ),

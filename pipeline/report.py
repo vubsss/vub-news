@@ -1,0 +1,357 @@
+"""The design note's tables, emitted from the ledger so they cannot disagree.
+
+The note has to show every option that was tried and say why the chosen one
+won. Assembling that at write-up time from a dozen artifacts is exactly where
+numbers get transcribed wrong — a digit drops, a row is read off the wrong
+split, and the paper says something the repository does not.
+
+So no number is typed into the `.tex`. Every table is generated here from
+`artifacts/tradeoffs.jsonl`, the note `\\input`s the generated files, and a
+figure in the note that has no ledger row behind it cannot exist because there
+is nowhere to write it.
+
+Three kinds of table come out:
+
+    decisions   one per (dataset, stage): option, AUC with interval, bytes,
+                milliseconds, and which one the registry actually holds
+    curve       a numeric axis read out of the variant names, for the four
+                figures the tickets built: K, rounds, tiers, chunk size
+    serving     the per-stage request breakdown and the three 10x rows
+
+`—` is a measurement not taken. It renders as an em dash in the note too,
+rather than as a zero or a blank, because a table of an unfinished project
+should look unfinished.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+from pathlib import Path
+
+from pipeline import ledger, paths
+from pipeline.datasets import DATASETS, DEFAULT_DATASETS, DatasetConfig
+
+# Where the note and its generated tables live. Inside the repository rather
+# than under artifacts/, because the note is source and artifacts/ is
+# gitignored -- a note whose tables vanish on a clean checkout is not a note a
+# grader can build.
+REPORT_DIR = "report"
+TABLES_DIR = "tables"
+NOTE = "a2-design-note.tex"
+
+# Characters TeX reads as instructions. Variant names are full of them --
+# `cut@100`, `content+history`, `drop:none` -- and an unescaped underscore is a
+# compile error three hundred lines from the thing that caused it.
+ESCAPES = {
+    "\\": r"\textbackslash{}",
+    "&": r"\&",
+    "%": r"\%",
+    "$": r"\$",
+    "#": r"\#",
+    "_": r"\_",
+    "{": r"\{",
+    "}": r"\}",
+    "~": r"\textasciitilde{}",
+    "^": r"\textasciicircum{}",
+}
+
+# The columns each decision table shows, and how the ledger renders them.
+DECISION_COLUMNS = (
+    ("option", None),
+    ("AUC (95\\% CI)", None),
+    ("$\\Delta$ vs", None),
+    ("model", "model_bytes"),
+    ("train", "train_seconds"),
+    ("p50 ms", "p50_ms"),
+    ("chosen", None),
+)
+
+
+def escape(text: object) -> str:
+    """A ledger value as TeX. Never trusted to be free of TeX's own syntax."""
+    if text is None:
+        return "---"
+    return "".join(ESCAPES.get(character, character) for character in str(text))
+
+
+# ---------------------------------------------------------------------------
+# Which option the registry actually holds.
+
+
+def chosen(config: DatasetConfig, stage: str) -> str | None:
+    """The variant name this dataset's registry entry names, for `stage`.
+
+    Read off the spec rather than off the best row, which is the whole point:
+    the chosen option is the one the code will run, and if that is not the one
+    that won its sweep then the table should show it losing. A table that
+    ticked the highest AUC would be unable to express that, and the disagreement
+    is exactly what a reader needs to see.
+
+    None where the registry names no variant for a stage -- the serving
+    benchmark's rows are a sweep with no registry entry behind them -- and the
+    column then shows nothing rather than guessing.
+    """
+    from pipeline import nrms, rerank
+
+    if stage == "nrms":
+        return nrms.variant_of(config.nrms)
+    if stage == "rerank":
+        return rerank.variant_of(config.rerank)
+    if stage == "ablation":
+        # The ablation's arms are all deliberate departures from one model;
+        # `full` is that model and the others exist to be worse.
+        return "full"
+    if stage == "retrieve":
+        return "hybrid"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# The decision tables.
+
+
+def rows_for(dataset: str, stage: str, split: str | None = None) -> list[dict]:
+    """The ledger's rows for one cell of the note, in a stable order."""
+    found = [
+        row
+        for row in ledger.load()
+        if row["dataset"] == dataset
+        and row["stage"] == stage
+        and (split is None or row["split"] == split)
+    ]
+    return sorted(found, key=lambda row: (row["split"], row["variant"]))
+
+
+def decision_table(config: DatasetConfig, stage: str, split: str | None = None) -> str:
+    """One stage's options as a LaTeX tabular, losers included.
+
+    Every row the ledger holds for the stage, not the interesting ones: the
+    note's claim is that each choice was made against alternatives, and a table
+    showing only the winner is a claim without evidence.
+    """
+    rows = rows_for(config.name, stage, split)
+    picked = chosen(config, stage)
+    lines = [
+        "% Generated by `python -m pipeline.report`. Do not edit.",
+        "\\begin{tabular}{l r l r r r c}",
+        "\\toprule",
+        " & ".join(name for name, _ in DECISION_COLUMNS) + " \\\\",
+        "\\midrule",
+    ]
+    if not rows:
+        lines += [
+            f"\\multicolumn{{{len(DECISION_COLUMNS)}}}{{c}}{{\\emph{{no rows "
+            f"recorded for {escape(stage)} on {escape(config.name)}}}}} \\\\",
+            "\\bottomrule",
+            "\\end{tabular}",
+        ]
+        return "\n".join(lines) + "\n"
+
+    for row in rows:
+        cells = [
+            escape(row["variant"]),
+            escape(ledger.interval(row, "auc")),
+            escape(ledger.delta(row)),
+            escape(ledger.cell(row["model_bytes"], "bytes")),
+            escape(ledger.cell(row["train_seconds"], "seconds")),
+            escape(ledger.cell(row["p50_ms"], "ms")),
+            "$\\checkmark$" if picked is not None and row["variant"] == picked else "",
+        ]
+        lines.append(" & ".join(cells) + " \\\\")
+    lines += ["\\bottomrule", "\\end{tabular}"]
+    if picked is not None and not any(row["variant"] == picked for row in rows):
+        # Said in the table rather than left to the reader. A registry entry
+        # with no row is a configuration nobody measured, which is a more
+        # serious thing than a missing cell.
+        lines.append(
+            f"\n% WARNING: the registry holds `{picked}`, which has no row here."
+        )
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# The curves.
+
+
+def axis_from(variant: str, pattern: str) -> float | None:
+    """The numeric x of a variant, pulled out of its own name.
+
+    The axis lives in the name because that is where the sweep put it:
+    `cut@100`, `rounds:200`, `bm25@50k`. Reading it back is a regex rather than
+    a field, and that is a deliberate trade -- the alternative is a ledger
+    column per sweep axis, which every future axis would have to add.
+    """
+    found = re.search(pattern, variant)
+    if not found:
+        return None
+    value = found.group(1)
+    return float(value[:-1]) * 1000 if value.endswith("k") else float(value)
+
+
+# The four figures the tickets built, each a (stage, pattern, x label) triple.
+CURVES = {
+    "k": ("ablation", r"cut@(\d+)\b", "retrieval depth $K$"),
+    "rounds": ("rerank", r"rounds[:@-](\d+)", "boosting rounds"),
+    "chunk": ("submit", r"@(\d+k?)(?::|$)", "chunk size (impressions)"),
+    "serve-k": ("serve", r"-k(\d+)", "retrieval depth $K$"),
+}
+
+
+def curve_table(config: DatasetConfig, name: str) -> str:
+    """A plot-ready table: x, AUC, bytes, p50, p99 — one row per swept value.
+
+    Emitted as a tabular rather than as pgfplots coordinates so the note can
+    print it as a table where a figure would be too much, and a reader can
+    check a plotted point against a printed one.
+    """
+    stage, pattern, label = CURVES[name]
+    points = []
+    for row in rows_for(config.name, stage):
+        x = axis_from(row["variant"], pattern)
+        if x is not None:
+            points.append((x, row))
+    points.sort(key=lambda pair: pair[0])
+
+    lines = [
+        "% Generated by `python -m pipeline.report`. Do not edit.",
+        "\\begin{tabular}{r r r r r}",
+        "\\toprule",
+        f"{label} & AUC & model & p50 ms & p99 ms \\\\",
+        "\\midrule",
+    ]
+    if not points:
+        lines += [
+            f"\\multicolumn{{5}}{{c}}{{\\emph{{no {escape(name)} rows recorded "
+            f"for {escape(config.name)}}}}} \\\\",
+        ]
+    for x, row in points:
+        lines.append(
+            " & ".join(
+                [
+                    f"{x:.0f}",
+                    escape(ledger.cell(row["auc"], "metric")),
+                    escape(ledger.cell(row["model_bytes"], "bytes")),
+                    escape(ledger.cell(row["p50_ms"], "ms")),
+                    escape(ledger.cell(row["p99_ms"], "ms")),
+                ]
+            )
+            + " \\\\"
+        )
+    lines += ["\\bottomrule", "\\end{tabular}"]
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# The serving table.
+
+
+def serving_table(config: DatasetConfig) -> str:
+    """The per-stage request breakdown, from the serving benchmark's own file.
+
+    Read from `bench-serve-<dataset>.jsonl` rather than from the ledger,
+    because the ledger keeps one p50 per variant and the note's table wants the
+    four stages behind it. Both come out of the same run, and the ledger's row
+    is the total of this table's row.
+    """
+    path = paths.ARTIFACTS_DIR / f"bench-serve-{config.name}.jsonl"
+    lines = [
+        "% Generated by `python -m pipeline.report`. Do not edit.",
+        "\\begin{tabular}{l r r r r r r}",
+        "\\toprule",
+        "variant & retrieve & features & nrms & gbdt & total p50 & total p99 \\\\",
+        "\\midrule",
+    ]
+    if not path.exists():
+        lines += [
+            "\\multicolumn{7}{c}{\\emph{the serving benchmark has not been "
+            "run: `python -m pipeline.serve`}} \\\\",
+            "\\bottomrule",
+            "\\end{tabular}",
+        ]
+        return "\n".join(lines) + "\n"
+
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        lines.append(
+            " & ".join(
+                [escape(row["variant"])]
+                + [
+                    f"{row[f'{stage}_p50_ms']:.2f}"
+                    for stage in ("retrieve", "features", "nrms", "gbdt")
+                ]
+                + [f"{row['total_p50_ms']:.2f}", f"{row['total_p99_ms']:.2f}"]
+            )
+            + " \\\\"
+        )
+    lines += ["\\bottomrule", "\\end{tabular}"]
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Writing them out.
+
+
+# One file per table, named for what it holds, because the note `\input`s them
+# by name and a renamed file should break the build rather than silently leave
+# a table out.
+STAGES = ("retrieve", "features", "nrms", "rerank", "ablation", "serve", "submit")
+
+
+def report_dir() -> Path:
+    return paths.REPO_ROOT / REPORT_DIR
+
+
+def tables_dir() -> Path:
+    return report_dir() / TABLES_DIR
+
+
+def write_tables(config: DatasetConfig) -> list[Path]:
+    """Every table for one dataset. Returns what it wrote."""
+    directory = tables_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    written = []
+    for stage in STAGES:
+        path = directory / f"{config.name}-{stage}.tex"
+        path.write_text(decision_table(config, stage), encoding="utf-8")
+        written.append(path)
+    for name in CURVES:
+        path = directory / f"{config.name}-curve-{name}.tex"
+        path.write_text(curve_table(config, name), encoding="utf-8")
+        written.append(path)
+    path = directory / f"{config.name}-serving.tex"
+    path.write_text(serving_table(config), encoding="utf-8")
+    written.append(path)
+    return written
+
+
+def run(datasets: tuple[str, ...] = DEFAULT_DATASETS) -> list[Path]:
+    written = []
+    for name in datasets:
+        written.extend(write_tables(DATASETS[name]))
+    return written
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m pipeline.report",
+        description=__doc__.splitlines()[0],
+    )
+    parser.add_argument("--dataset", action="append", choices=sorted(DATASETS))
+    args = parser.parse_args(argv)
+
+    written = run(tuple(args.dataset or DEFAULT_DATASETS))
+    for path in written:
+        print(f"  -> {path.relative_to(paths.REPO_ROOT)}")
+    print(
+        f"\n  {len(written)} tables. Build the note with:\n"
+        f"      cd {REPORT_DIR} && pdflatex {NOTE} && pdflatex {NOTE}\n"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

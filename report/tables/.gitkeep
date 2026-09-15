@@ -1,0 +1,4 @@
+Generated tables land here. `python -m pipeline.report` writes one .tex per
+(dataset, stage) out of artifacts/tradeoffs.jsonl, and the note \input's them
+by name. Nothing in this directory is written by hand -- a number typed here
+would be a number the repository cannot vouch for.

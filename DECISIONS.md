@@ -342,3 +342,22 @@ their own file of each — so a `test` run touches six materialised frames, of w
 builds three. Discovered the way these things are: a run that built only the causal `test` frame
 scored the split, ran most of the nineteen arms, and failed on the leaky one, at which point the
 refusal above would have blocked the retry. `final.build_frame` checks all six first.
+
+## 2026-09-15 — No number is typed into the design note
+
+`report/a2-design-note.tex` contains no figures at all. Every table is `\inputtable{...}`, and
+`python -m pipeline.report` generates those files from `artifacts/tradeoffs.jsonl`. A number in the
+note that has no ledger row behind it cannot exist, because there is nowhere to write it.
+
+Two consequences worth keeping. A table whose run has not happened renders as *"no rows recorded"*
+rather than as an empty tabular: a note of an unfinished project should look unfinished rather than
+complete and wrong. And the tables live in `report/tables/`, inside the repository, rather than
+under the gitignored `artifacts/` — a note whose tables vanish on a clean checkout is not a note a
+grader can build.
+
+The ✓ that marks the chosen option follows the **registry**, not the highest AUC. The chosen option
+is the one the code will actually run, so if that is not the one that won its sweep, the table has
+to be able to show it losing — a generator that ticked the best row could not express that, and the
+disagreement is exactly what a reader needs to see. A registry entry with no row at all is a
+configuration nobody measured, which is more serious than a missing cell, so it is flagged in the
+generated file.

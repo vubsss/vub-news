@@ -98,6 +98,41 @@ nothing will mistake for good data.
 pytest
 ```
 
+### Assignment 2: the two-stage system
+
+`python build.py` builds everything through the re-ranker and evaluates it on `validation` —
+`features`, `nrms` and `rerank` are stages like any other. Four things sit outside the rebuild
+because each is run deliberately rather than on every build:
+
+| Command | Effect |
+|---|---|
+| `python -m pipeline.ablation --split validation` | the nineteen arms, each a paired difference from the full model, with the Q9 pair and the recall@K bridge |
+| `python -m pipeline.serve` | one request at a time through the whole two-stage path: per-stage p50/p99, the bytes a request touches, the cost per thousand queries, the K-curve and the three 10× rows |
+| `python -m pipeline.predict --retriever rerank` | rank a competition's test set with the re-ranker and write the zip (`ada/predict-rerank.sbatch` on the cluster; `--bench-chunks` first, to choose `--chunk`) |
+| `python -m pipeline.final` | score `test` — **once**, with the date and commit recorded, and refused thereafter |
+| `python -m pipeline.report` | regenerate every table in the design note from the ledger |
+
+The ablation reads six materialised frames — `train`, `tune` and the scored split, each in a causal
+and a leaky copy — and `python build.py` builds only the three causal ones. Build the leaky copies
+before running it:
+
+```bash
+python -m pipeline.features --leaky --split train --split tune --split validation
+```
+
+`pipeline.final` does this for itself, because a run that spends the held-out split and *then*
+fails on a missing frame is blocked from retrying by its own refusal.
+
+### The trade-off ledger
+
+Every variant any of those commands tries records one row in `artifacts/tradeoffs.jsonl`, carrying
+both what it scores (AUC, MRR, nDCG, diversity, novelty, coverage, each with a bootstrap interval)
+and what it costs (bytes, seconds, peak RSS, p50/p99, rows/s). `python -m pipeline.ledger` renders
+it to `artifacts/tradeoffs.md`.
+
+A `—` in that table is a measurement that has not been taken, not a zero. The design note's tables
+are generated from the same file, so the note and the repository cannot disagree about a number.
+
 ## Evaluation
 
 `python build.py` scores every retriever on the **validation** split as part of stage 8. Any single
@@ -634,7 +669,18 @@ pipeline/
   predict.py          the competition's own impressions, ranked and packaged
   submissions.py      per-competition line formats for the prediction file
   paths.py            filesystem layout
+
+  ledger.py           the trade-off ledger: one row per variant, both metric families
+  features.py         one row per (impression, candidate), in four availability tiers
+  nrms.py             NRMS-DocVec, reproduced as a fourth retriever
+  rerank.py           the LightGBM re-ranker, a fifth, and the headline delta
+  ablation.py         nineteen arms, each a paired difference from the full model
+  serve.py            one request at a time, timed stage by stage, and where 10x breaks
+  final.py            `test`, scored once, with a record that says it was once
+  report.py           the design note's tables, emitted from the ledger
 tests/
+report/               the design note; its tables are generated, never typed
+ada/                  cluster placement — the same commands, with the filesystem moved
 notebooks/            the MIND embedding generation run, for a hosted GPU
 ```
 
@@ -655,11 +701,16 @@ and `HISTORY_COLUMNS`. Both datasets map onto exactly those columns, and a test 
 
 ## Status
 
-The scaffold, the registry, the checkpointed stage runner, raw data acquisition, ingest into the
-unified schema, the temporal split, text preprocessing, BM25 lexical retrieval, article embeddings,
-semantic retrieval, the full evaluation harness — ranking and beyond-accuracy metrics, population
-slices and bootstrap intervals — the lexical-against-semantic comparison, the ablation sweep and
-both CodaBench submissions all exist. Both leaderboard files are built and verified against the
-competitions' own inputs; what is left is uploading them, and a clean-clone run of the whole thing
-end to end with its wall-clock recorded. That is ticket 15, and the design note ticket 16 writes
-from it; see `../tickets/` for the breakdown and the dependency graph.
+**Assignment 1** is complete: the scaffold, the registry, the checkpointed stage runner,
+acquisition, ingest, the temporal split, preprocessing, BM25, article embeddings, semantic
+retrieval, the evaluation harness with slices and bootstrap intervals, the lexical-against-semantic
+comparison, the ablation sweep, and both CodaBench submissions.
+
+**Assignment 2** is built as code with tests on it and is **not yet measured**. The feature frame,
+NRMS-DocVec, the LightGBM re-ranker, the nineteen ablation arms, the submission path over the
+competitions' own periods, the serving benchmark, the scored-once `test` batch and the design
+note's table generator all exist; `pytest` is green. What does not exist in this checkout is any
+*number*: there is no MIND or EB-NeRD data here, so every ledger cell is blank and every ticket
+file in `tickets/a2/` states which command fills its own.
+
+See `HANDOFF.md` for what has to happen next, in order, on a machine that has the data.

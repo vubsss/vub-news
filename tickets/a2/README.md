@@ -17,6 +17,19 @@ Every ticket that tries an option writes a row to the **trade-off ledger** — f
 peak RSS, p50/p99, rows/s) on the same row. The design note is written from that file, so a
 ticket is not done while its row has one side blank.
 
+From ticket 04 on, every ticket closes with two sections that turn that rule into work:
+
+- **Options tried** — the variations compared at that stage, each a ledger row chosen on `tune`,
+  so the design note can show a decision as a table with the losers in it. Axes are swept one at a
+  time from a stated default, not as a grid; where an axis is *not* a real variation (a monotone
+  transform under a GBDT, say) the ticket says so, so nobody adds it later.
+- **Latency and loading** — how the stage reads its inputs (parquet row groups, column projection,
+  `mmap`, chunks in `impression_time` order, loaded-once per job or per chunk or per request), which
+  index method and precision, per-stage timers from `timings.sample()`, and the engineering
+  columns those measurements fill. The submission path (08) is where sequential loading is the
+  whole point; the serving benchmark (09) is where the index method is chosen with its functional
+  column beside it.
+
 ## Dependency graph
 
 ```mermaid
@@ -60,3 +73,8 @@ parallelism is what makes five days enough.
 | Sept 18 | 07, 08 (jobs running) |
 | Sept 19 | 09, 10 |
 | Sept 20 | 11 |
+
+The options sections add roughly a half-day across 04–06 (mostly extra training runs on `tune` from
+frames and loaders that exist anyway) and nothing to 07–09, whose options are the same benchmarks
+run with one more flag. If the budget slips, the axes to drop first are named in each ticket's
+order: last bullet first.

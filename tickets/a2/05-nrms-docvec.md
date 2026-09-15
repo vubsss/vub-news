@@ -20,3 +20,21 @@ retriever table, so evaluation, slicing, bootstrap CIs and beyond-accuracy metri
 - [ ] Grid on `tune`: history length ∈ {20, 50, 80}, heads ∈ {8, 16}; each cell a ledger row with AUC, train seconds, model bytes and per-impression scoring ms.
 - [ ] The ebnerd-benchmark paper's reported NRMS-DocVec number on `ebnerd_small` is looked up and written next to ours in the artifact markdown, with the gap stated either way.
 - [ ] Runs on the laptop CPU within an hour per dataset, or the Ada GPU job that runs it is checked in.
+
+## Options tried (each a ledger row on `tune`; the chosen cell is named in `NrmsSpec`)
+
+- [ ] **Architecture grid** (above): history length × heads. The history-length axis doubles as an engineering curve — longer history is more attention work per impression, so the row's `p50_ms` moves with its AUC.
+- [ ] **Input vectors:** A1's *corrected* vectors (centre / abtt) against the *raw* ones from the same encoder. A1 chose the correction for nearest-neighbour retrieval; whether a trained user encoder still wants it is a separate question, answered by two ledger rows per dataset that cost nothing but a second training run.
+- [ ] **Negatives:** in-impression 1:4 (the paper's setting) against 1:1 and against 4 uniformly random catalogue negatives. The random-negative row is expected to lose — it is there so the note can say the baseline was trained the way its authors trained it *and* that the choice mattered.
+- [ ] **Epochs by early stopping on `tune` AUC**, patience 1; the row records the epoch chosen and the AUC one epoch either side, so the note can show the curve rather than assert the stop.
+
+## Latency and loading
+
+NRMS is the slowest stage-two component; ticket 09 needs its cost split into "per user" and "per
+candidate" so the serving breakdown is honest about which part a cache could remove.
+
+- [ ] **Scoring path:** the user vector is computed once per impression and dot-producted against all candidates — never one forward pass per `(user, candidate)` pair. A ledger row per dataset records `p50_ms`/`p99_ms` for the user encoder alone and for the candidate dot alone, from `timings.sample()` around each.
+- [ ] **Batched scoring at evaluation and submission:** impressions are scored in batches (histories padded to the spec's length); batch size ∈ {64, 512} tried once on `tune`, rows/s and peak RSS recorded. `rank_candidates` and `ranker` share the batched path, so the harness and the submission measure the same code.
+- [ ] **Vectors:** the document matrix is `np.load(mmap_mode="r")` and gathered per batch by int id — no per-user copy of the catalogue. Resident bytes with and without mmap are one ledger row.
+- [ ] **Checkpoint bytes:** `fp32` state dict against `fp16` for scoring; `model_bytes` and `tune` AUC per precision are two rows, the same shape as A1's precision bench for the index.
+- [ ] **Training data loading:** click histories come from the history table keyed by user (one read per training run, not one per batch); a test asserts the training loop opens the store once.

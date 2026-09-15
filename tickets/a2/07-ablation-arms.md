@@ -18,3 +18,19 @@ of all five retrievers.
 - [ ] Arms are chosen and inspected on `tune`, then run once on `validation`; nothing is run on `test`.
 - [ ] Every arm is a ledger row with its delta and interval and its own model bytes and per-impression ms.
 - [ ] Tests: an arm that drops a tier has none of that tier's columns in its model; the leaky arm and the clean arm differ only in the counter's `t`.
+
+## Options tried (each arm is one; the table is the comparison)
+
+The arms above are the functional variations. Two more make the ablation say something about
+*serving*, not only about features:
+
+- [ ] **Availability-tier arms in serving order:** `content` only → `+history` → `+exposure` → `+clicked` — the cumulative build-up, not only the leave-one-out. Each row's `p50_ms` includes the feature lookup that tier costs (ticket 04's per-stage timing), so the note has a curve of AUC against feature-lookup latency, tier by tier.
+- [ ] **Stage-one index arm:** the literal-cut arm with candidates from the flat index against IVF at the same K — the recall@K the IVF loses and the AUC it costs, so ticket 09's flat-versus-IVF latency has a functional column beside it.
+- [ ] **Leaky arm at every window:** the Q9 gap is reported for the chosen window and for `cumulative`, because the leak is largest when the counter runs to the end of the log; two rows keep the note from quoting only the flattering one.
+
+## Latency and loading
+
+- [ ] **One frame, loaded once:** the ablation reads the `validation` frame a single time and each arm is a column projection of it (ticket 04's readers); no arm rebuilds features. A test asserts the builder is called once per split for the whole run.
+- [ ] **Arms retrain from the projected frame sequentially**, row-group by row-group, with the same loader as ticket 06; the whole ablation's wall time, peak RSS and arm count are one ledger row, so the note can say what a full ablation costs to rerun.
+- [ ] **Literal-cut candidates** come from a single batched `index.search` per split at `K=200` and are sliced to 50 and 100 — three arms, one search; the search's `p50_ms` is recorded once and attributed to all three.
+- [ ] Per-arm `model_bytes` and `p50_ms` are measured, not copied from the full model — a tier-less model is smaller and faster, and that is part of what the arm shows.

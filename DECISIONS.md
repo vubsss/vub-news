@@ -86,3 +86,55 @@ ticket 06 is a functional one, not an engineering one.
 Two things a reader can lean on: an id the log never showed reads 0 / 0 / NaN (not 0 CTR — the
 re-ranker can tell "never shown" from "shown, never clicked"), and the whole-log read with a
 window is refused rather than answered, because a window ending at infinity is not a thing.
+
+## 2026-09-15 — The availability tier *is* the module's structure
+
+`features.FEATURE_GROUPS` maps `content` / `history` / `exposure` / `clicked` onto the column
+names in each, and `check_columns` refuses a frame whose columns do not partition exactly over
+them. Over a comment naming the tiers, and over four separate builders: ticket 07's ablation
+drops a tier per arm, so a feature in no tier is one no arm can drop and a feature in two is one
+that two arms would each claim to have dropped — and neither failure shows up in a number. The
+same check refuses `read_time`, `scroll_percentage`, `next_read_time` and `next_scroll_percentage`
+by name *and* as a suffix, so a column called `mean_read_time` cannot carry the impression's own
+outcome in under a different name. It runs inside `frame_for`, so it fails the build rather than
+being available to it; a test injects a leaking feature family to prove that wiring.
+
+## 2026-09-15 — Recency is columns side by side, not a chosen scheme
+
+A1 picked one weighting scheme per dataset because a retriever ranks by one profile. A tree does
+not: it can read seven profiles at once and tell us which earned gain. So the frame carries
+`hist_cos_mean_<profile>` and `hist_cos_max_<profile>` for uniform, two position decays, three
+time half-lives (6/24/72 h) and engagement — and a profile the dataset cannot express comes out
+NaN, decided by `weighting.available` off the registry's ColumnMap rather than by a dataset name.
+Ticket 06 reads the gain table; this ticket chooses nothing.
+
+Two non-variations are recorded so nobody adds them later thinking they were missed. Freshness is
+raw hours only: a GBDT splits on thresholds and is invariant to monotone transforms, so `log_hours`
+would split one column's gain in two and buy nothing. And `last` pooling gets one column rather
+than one per profile: it is the similarity to a single click, and a profile's weight on it is one
+positive per-impression scalar that says nothing about the candidate. `mean` and `max` do get one
+per profile — the weights change the average and change the argmax.
+
+## 2026-09-15 — The leaky arm shifts its window forward rather than widening it
+
+Q9's cumulative arm is `at(ids, WHOLE_LOG)`, which the counter store already answers. A *sliding*
+window has no whole-log reading — "the last hour" of a moment past the end of the log is still an
+hour — so the leaky arm reads `[t, t + window)` where the causal one reads `[t - window, t)`: the
+same width, moved onto the future the server could not have had, and including the impression's
+own outcome. Freshness leaks the same way, through the article's first sighting anywhere in the
+log instead of its first sighting before `t`. One store, one flag, no second implementation.
+
+## 2026-09-15 — The frame's storage is a registry spec, and its axes are engineering-only
+
+`FeatureSpec(chunk_impressions, row_group, precision)` sits beside the functional specs because
+none of its three fields changes a number in the frame. Chunk size is what peak RSS is a function
+of — a chunk is built, written as one parquet row group and dropped, so the frame is never whole
+in memory — and it is therefore *not* in the ledger's variant name: a name implying otherwise
+would invite someone to compare two chunk sizes' AUC. Precision and row-group size are in the
+name, because `float16` halves the largest file A2 writes and whether that costs AUC is a real
+question, answered in ticket 06 by training on both files.
+
+The cosine features read the embedding matrix with `np.load(mmap_mode="r")` and gather a few dozen
+rows per impression. The retriever-score features do not: they come from `rank_candidates`, the
+harness's own call, which loads its own copy. Recomputing those scores here off the mmap would be
+a second implementation of a published number, which is the trade this records rather than hides.

@@ -18,6 +18,7 @@ from pipeline import (
     counters,
     embed,
     evaluate,
+    features,
     ingest,
     paths,
     predict,
@@ -56,6 +57,11 @@ STAGES = (
     Stage("bm25", "build BM25 index, report recall@K", bm25_index.run),
     Stage("embed", "obtain article embeddings", embed.run),
     Stage("ann", "build FAISS index, report recall@K", ann_index.run),
+    Stage(
+        "features",
+        "the (impression, candidate) frame the re-ranker learns from",
+        features.run,
+    ),
     Stage("evaluate", "ranking metrics per retriever", evaluate.run),
     Stage("predict", "rank the competition's test impressions", predict.run),
 )

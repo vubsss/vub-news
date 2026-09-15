@@ -756,12 +756,19 @@ def _cached(
     return Embeddings(vectors=np.load(directory / VECTORS), article_ids=stored)
 
 
-def load(config: DatasetConfig) -> Embeddings:
-    """The aligned, unit-length matrix this stage last wrote."""
+def load(config: DatasetConfig, mmap: bool = False) -> Embeddings:
+    """The aligned, unit-length matrix this stage last wrote.
+
+    `mmap` leaves the matrix on disk and pages in the rows that are touched.
+    A retriever reads every row -- a flat index is the whole matrix -- so it
+    takes the resident copy; a stage that gathers a few dozen rows per
+    impression, as the A2 feature frame does for its cosine columns, would
+    otherwise hold 190 MB of MIND resident to look at a fraction of it.
+    """
     directory = output_dir(config)
     ids = pd.read_parquet(directory / ID_INDEX)["article_id"]
     return Embeddings(
-        vectors=np.load(directory / VECTORS),
+        vectors=np.load(directory / VECTORS, mmap_mode="r" if mmap else None),
         article_ids=ids.astype("string").to_numpy(dtype=object),
     )
 

@@ -272,6 +272,34 @@ class WeightingSpec:
 
 
 @dataclass(frozen=True)
+class FeatureSpec:
+    """How the A2 feature frame is materialised, per dataset.
+
+    Nothing here changes a single number in the frame -- the three fields are
+    what the build costs and what the file weighs, which is why they sit beside
+    the functional specs rather than inside them.
+
+    `chunk_impressions` is how many impressions are turned into rows before a
+    row group is written and the memory dropped, so peak RSS is a function of
+    it rather than of the split's length. `None` is the whole split at once,
+    which is the row the sweep compares the others against.
+
+    `row_group` is how many *rows* parquet keeps together, which is the unit an
+    ablation arm's projected read pays for. `precision` is `float32` or
+    `float16`; the frame is the largest thing A2 writes and halving it is worth
+    measuring, so both are built and ticket 06 trains on each.
+
+    The values here are where the sweep starts. The chosen ones are written
+    back with the ledger rows that chose them, the way every other spec in this
+    registry records the comparison that settled it.
+    """
+
+    chunk_impressions: int | None = 200_000
+    row_group: int = 512_000
+    precision: str = "float32"
+
+
+@dataclass(frozen=True)
 class EmbeddingSpec:
     # "generate": produced by a notebook on a hosted GPU, fetched as an
     # artifact. "provided": ships with the dataset.
@@ -407,6 +435,10 @@ class DatasetConfig:
     # `python -m pipeline.embed_compare` scores each on the tune split, and
     # whichever wins is promoted into `embeddings` by hand.
     embedding_variants: tuple[EmbeddingSpec, ...] = ()
+    # How the A2 feature frame is written and read. Defaulted rather than
+    # spelled out per dataset: both start from the same sweep, and the entry
+    # that differs is the one that has been measured.
+    features: FeatureSpec = FeatureSpec()
 
     @property
     def raw_dir(self) -> Path:

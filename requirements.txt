@@ -21,6 +21,9 @@ torch==2.13.0
 # Metrics
 scikit-learn==1.9.0
 
+# Re-ranking (A2). The CPU wheel; the laptop has no GPU and the trees do not need one.
+lightgbm==4.7.0
+
 # Data acquisition
 huggingface-hub==1.26.0
 gdown==6.1.0

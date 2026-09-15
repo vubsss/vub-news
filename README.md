@@ -327,6 +327,44 @@ terms' frequency before saturation, which is the mechanism, but it also lengthen
 real per-field length normalisation would not. `bm25s` indexes one field and cannot express the exact
 form, and `LexicalSpec` says so rather than glossing it.
 
+## What the choices cost
+
+Every other comparison here chooses a *setting* by AUC. `pipeline.bench` measures what AUC cannot
+see, because two tool choices had been made by argument rather than by measurement — the exact FAISS
+index ("approximation buys nothing at this size") and `bm25s` over `rank_bm25` ("faster"). Neither
+had ever been timed.
+
+```bash
+python -m pipeline.bench --dataset mind --bench all    # ann, scale, lexical, serve, precision
+```
+
+Writes `artifacts/bench-<kind>-<dataset>.jsonl` and a markdown table beside it, like every other
+comparison. The `lexical` bench needs `pip install rank_bm25`; it is deliberately **not** in
+`environment.yml`, because it is here to be measured against rather than depended on, and the bench
+reports the backend it has if it is absent.
+
+What it found:
+
+- **Approximation was not worthless, the argument was.** IVF is 7.7x (MIND) and 14.8x (EB-NeRD)
+  faster at the median for 4–8% of the exact top-10. What actually justifies exact search is that
+  **the index is off the ranking path**: `rank_candidates` scores an impression's own candidates by
+  direct product against rows looked up by id, and never queries the index — so approximation can
+  cost recall@K and cannot cost AUC.
+- **FAISS' flat index earns nothing over the matrix it wraps** at this scale: 1.9–3.7x slower than a
+  bare `numpy` matmul, which it also duplicates in memory.
+- **`bm25s` is 3,385x faster per query** than `rank_bm25` on MIND at 0.992 top-10 agreement, and
+  pays for it with a 4x slower index build. The SPEC claim was right; the trade was never stated.
+- **`ann` is the cheaper retriever as well as the better one** — 0.108 ms against 2.43 ms per
+  impression on MIND, 0.078 against 8.03 on EB-NeRD. EB-NeRD's 124.5 impressions/s reproduces the
+  125 quoted in the design note from an unrelated measurement.
+- **`HISTORY_K` 10 -> 80 costs 5.8x on the lexical path and 1.6x on the semantic one.** A lexical
+  query is text rebuilt from K titles per impression; a semantic one is the mean of K rows.
+- **Precision buys memory, not speed.** int8 is 4x smaller at +0.0001 AUC and 1.9x *slower*, because
+  the quantiser decompresses per query. Width bought neither.
+- **Exact search holds a 10 ms median to about 85M `n x d` elements** on both datasets independently.
+  Our offline catalogue is 50M; `MINDlarge_test` at 120,961 x 768 is 92.9M, so the *submission*
+  already runs past the point where the shipped choice stops being free.
+
 ## Lexical against semantic
 
 The comparison the assignment asks for — which retriever wins, on which dataset, on which slice — is

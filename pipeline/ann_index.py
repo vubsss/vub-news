@@ -5,10 +5,19 @@ scored by the same recall, so the two are read side by side. Nothing here
 knows which dataset it holds: it asks embed for a matrix and the registry for
 nothing at all.
 
-The index is exact rather than approximate. At 20,738 articles for EB-NeRD and
-65,238 for MIND a brute-force inner product costs milliseconds, so approximate
-search would buy nothing and would put its own recall loss inside the number
-this ticket exists to measure.
+The index is exact rather than approximate -- but not for the reason this
+docstring used to give. It claimed approximate search "would buy nothing" at
+20-65k articles, which was never measured and is wrong: `pipeline.bench` puts
+IVF at 7.7x (MIND) and 14.8x (EB-NeRD) the median query, for 4-8% of the exact
+top-10.
+
+What actually justifies exact search here is narrower. **This index is not on
+the ranking path.** `rank_candidates` below scores an impression's own
+candidates by direct product against the rows it looks up by id; it never calls
+`Index.retrieve`. The index serves corpus retrieval -- the recall@K table --
+alone, which is the number this ticket exists to measure, so an approximation's
+recall loss would land entirely inside it and buy nothing back. That holds to
+about 85M `n x d` elements; past there the trade changes and the note says so.
 """
 
 from __future__ import annotations

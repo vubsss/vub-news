@@ -472,6 +472,11 @@ class RerankSpec:
     window: str = "24h"
     groups: tuple[str, ...] = ("content", "history", "exposure", "clicked")
     nrms: bool = True
+    # Columns removed by name after the tiers and the window have selected
+    # them. Some of ticket 07's arms are narrower than a tier -- "no session or
+    # dwell features", "no retriever scores" -- and expressing those as a tier
+    # would mean inventing a tier whose availability story is not true.
+    drop: tuple[str, ...] = ()
     causal: bool = True
     top_k: int | None = None
     # Which feature frame to read: the two precisions are two files.

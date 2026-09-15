@@ -212,3 +212,33 @@ the server could not have had, and closed on the left so it contains the impress
 So the two arms are compared for difference on the sliding columns and for size on the cumulative
 one, and the tests say which is which. A "leaky = bigger number" intuition would have quietly made
 the sliding arms look like a bug.
+
+## 2026-09-15 — A cut is scored, not trained, so the cut arms share one model
+
+Every arm that differs only in `top_k`, or in which index supplied the top-K, grows the same trees
+from the same rows. The ablation trains once per *training identity* and scores that model several
+times. Not a shortcut: retraining would produce identical trees and would invite a reader to think
+the difference between two cut rows included a difference in fitting. The saved model bytes are
+therefore equal across those rows, which is the fact, and the table shows it.
+
+The cut itself is against the retriever's **corpus** top-K, not against the candidate list's own
+order. A production system retrieves K out of the catalogue and re-ranks those, so a logged
+candidate stage one would never have surfaced is one the user would never have seen — and that is
+the same ranking `retrieval.recall_at_k` measures, which is why the cut rows and the recall table
+are printed next to each other. `rerank.ranked_from` refuses a cut without those ranks rather than
+falling back to the in-impression rank, which is a weaker claim wearing the same name.
+
+## 2026-09-15 — Early stopping reads `tune` whatever split the arms are reported on
+
+`ablation.run_arms` takes three splits, not two: it fits on the later half of `train`, stops on
+`tune`, and scores on whichever split it was asked for. The obvious implementation — stop on the
+split being scored — would have selected the number of rounds on `validation` for every arm in the
+validation table. A1's rule carries over unchanged, and a test asserts the stopping rows never
+intersect the scored ones.
+
+## 2026-09-15 — `bench.ivf_index` is one definition, because two numbers describe one index
+
+The ablation's `cut@K (ivf)` arm reports the AUC an approximate index costs; `bench` reports the
+latency it saves. Those are only comparable if they are the same index, so the nlist/nprobe rule
+moved into `bench.ivf_index` and both call it. Duplicating four lines of faiss construction would
+have let the two tables drift into describing different indexes under one name.

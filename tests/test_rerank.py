@@ -397,6 +397,36 @@ def test_the_importance_table_sums_gain_per_availability_tier(store, small):
 # --- scoring ----------------------------------------------------------------
 
 
+def test_the_cut_is_about_the_corpus_top_k_not_the_candidate_list(store, small):
+    """The claim the cut row makes: a production system retrieves K out of the
+    whole catalogue and re-ranks those, so a logged candidate the retriever
+    would never have surfaced is one the user would never have seen. Asking
+    for the cut without those corpus ranks is refused rather than answered
+    with the in-impression order, which is a weaker, different claim."""
+    write_store()
+    behaviors = pd.read_parquet(MIND.feature_store_dir / "behaviors.parquet")
+    impressions = behaviors[behaviors["split"] == "validation"]
+    history = ingest.history_for(MIND, impressions)
+
+    lookup = rerank.global_ranks(MIND, impressions, history, depth=2)
+    assert set(lookup) == set(impressions["impression_id"])
+    for ranks in lookup.values():
+        assert sorted(ranks.values()) == [1.0, 2.0]
+
+    frame = pd.DataFrame(
+        {
+            "impression_id": pd.Series(["v0", "v0"], dtype="string"),
+            "article_id": pd.Series(["a2", "a3"], dtype="string"),
+        }
+    )
+    aligned = rerank.ranks_for(frame, lookup)
+    assert len(aligned) == 2
+    with pytest.raises(rerank.RerankError, match="corpus ranks"):
+        rerank.ranked_from(
+            frame, np.array([0.5, 0.4]), dataclasses.replace(SMALL_RERANK, top_k=1)
+        )
+
+
 def test_the_literal_cut_ranks_everything_outside_k_last():
     """What a real two-stage system does, and the row that says what it costs:
     the candidates the retriever did not surface are never scored, so they go

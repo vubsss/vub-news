@@ -149,18 +149,26 @@ def feature_columns(spec: RerankSpec) -> tuple[str, ...]:
         chosen = [name for name in chosen if name not in windowed or name in kept]
     if spec.nrms:
         chosen.append(NRMS_COLUMN)
-    return tuple(chosen)
+    unknown = [name for name in spec.drop if name not in chosen]
+    if unknown:
+        raise RerankError(
+            f"this arm cannot drop {', '.join(unknown)}: not columns it reads. "
+            f"A drop that silently did nothing would be an ablation arm "
+            f"identical to the model it claims to ablate."
+        )
+    return tuple(name for name in chosen if name not in spec.drop)
 
 
 def variant_of(spec: RerankSpec) -> str:
     """What the ledger calls this arm: the fields that make it a different
     model, and none that do not."""
     dropped = [
-        group for group in features.FEATURE_GROUPS if group not in spec.groups
-    ] or ["none"]
+        *(group for group in features.FEATURE_GROUPS if group not in spec.groups),
+        *spec.drop,
+    ]
     return (
         f"{spec.objective}-l{spec.leaves}-{spec.window}"
-        f"-drop:{'+'.join(dropped)}"
+        f"-drop:{'+'.join(dropped) if dropped else 'none'}"
         f"{'' if spec.nrms else '-nonrms'}"
         f"{'' if spec.causal else '-leaky'}"
         f"{'' if spec.top_k is None else f'-cut{spec.top_k}'}"
@@ -499,6 +507,46 @@ def load_model(config: DatasetConfig, spec: RerankSpec | None = None) -> lgb.Boo
 # Scoring: the served path.
 
 
+def global_ranks(
+    config: DatasetConfig,
+    behaviors: pd.DataFrame,
+    history: pd.DataFrame,
+    depth: int,
+    history_k: int = retrieval.HISTORY_K,
+) -> dict[str, dict[str, float]]:
+    """Where each impression's candidates sit in the retriever's *corpus* top-K.
+
+    The literal cut is about the candidate generator, not about the candidate
+    list: a production system retrieves K articles out of the whole catalogue
+    and re-ranks those, so a logged candidate the retriever would not have
+    surfaced is one the user would never have seen. That is the same ranking
+    `retrieval.recall_at_k` is measured on, which is why the cut arms and the
+    recall table belong in one document -- the recall is the ceiling the cut
+    row sits under.
+
+    One batched search per split at the deepest K; the shallower cuts are
+    prefixes of the same ranking.
+    """
+    from pipeline import ann_index
+
+    ranked, _ = ann_index.retrieve_corpus(config, behaviors, history, history_k, depth)
+    return {
+        impression: {article: position + 1.0 for position, article in enumerate(ids)}
+        for impression, ids in zip(ranked["impression_id"], ranked["ranked_ids"])
+    }
+
+
+def ranks_for(frame: pd.DataFrame, lookup: dict[str, dict[str, float]]) -> np.ndarray:
+    """The global rank of every row of the long frame, NaN outside the search."""
+    return np.array(
+        [
+            lookup.get(impression, {}).get(article, np.nan)
+            for impression, article in zip(frame["impression_id"], frame["article_id"])
+        ],
+        dtype="float64",
+    )
+
+
 def cut_outside_k(scores: np.ndarray, ranks: np.ndarray, top_k: int) -> np.ndarray:
     """Push the candidates the retriever did not surface to the bottom.
 
@@ -551,21 +599,32 @@ def score_frame(
     return np.asarray(scores, dtype="float64")
 
 
-def ranked_from(frame: pd.DataFrame, scores: np.ndarray, spec: RerankSpec) -> pd.DataFrame:
+def ranked_from(
+    frame: pd.DataFrame,
+    scores: np.ndarray,
+    spec: RerankSpec,
+    ranks: np.ndarray | None = None,
+) -> pd.DataFrame:
     """The harness's shape, grouped back out of the long frame.
 
     The frame is the candidate list exploded in arrival order, so grouping by
     impression and keeping the row order recovers exactly the list the dataset
     gave -- which is what makes the stable sort in `retrieval.ranked_frame`
     mean what it says.
+
+    `ranks` are the corpus ranks the literal cut needs, one per row. Required
+    rather than defaulted: the in-impression rank is already a column of the
+    frame and would make the cut a different, weaker claim -- about the order
+    of a list the dataset supplied rather than about what the candidate
+    generator would have surfaced.
     """
     ids = frame["impression_id"].to_numpy()
     articles = frame["article_id"].to_numpy()
-    ranks = (
-        frame["ann_rank"].to_numpy(dtype="float64")
-        if spec.top_k is not None
-        else None
-    )
+    if spec.top_k is not None and ranks is None:
+        raise RerankError(
+            "a top-K cut needs the retriever's corpus ranks; "
+            "`global_ranks` is where they come from"
+        )
 
     impression_ids, candidates, per_impression = [], [], []
     for impression, span in group_spans(ids):
@@ -600,12 +659,24 @@ def rank_candidates(
         )
     booster = load_model(config, spec)
     scores = nrms_scores(config, _split_of(behaviors)) if spec.nrms else None
+    lookup = (
+        global_ranks(config, behaviors, history, spec.top_k, history_k)
+        if spec.top_k is not None
+        else None
+    )
 
     parts = []
     for frame in frames_for(config, behaviors, history, spec, history_k):
         if spec.nrms:
             frame = with_nrms(frame, scores)
-        parts.append(ranked_from(frame, score_frame(booster, frame, spec), spec))
+        parts.append(
+            ranked_from(
+                frame,
+                score_frame(booster, frame, spec),
+                spec,
+                None if lookup is None else ranks_for(frame, lookup),
+            )
+        )
     return pd.concat(parts, ignore_index=True)
 
 
@@ -676,6 +747,7 @@ class Ranker:
     def rank(self, history: pd.DataFrame, candidates: list[list[str]]) -> pd.DataFrame:
         frame = self.build_frame(history, candidates)
         return ranked_from(frame, score_frame(self.booster, frame, self.spec), self.spec)
+
 
 
 def ranker(

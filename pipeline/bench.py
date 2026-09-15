@@ -101,6 +101,26 @@ def search_latency(index: faiss.Index, sample: np.ndarray) -> dict[str, float]:
     return percentiles(timings)
 
 
+# nlist by the usual sqrt(n) rule and nprobe at about 8% of the lists: the
+# setting a deployment would reach for before it tuned anything. One definition,
+# because ticket 07 scores the recall this index loses and this module measures
+# the latency it saves -- and those two numbers have to describe one index.
+NPROBE_SHARE = 12
+
+
+def ivf_index(vectors: np.ndarray):
+    """The approximate index both the scale bench and the ablation use."""
+    n, dim = vectors.shape
+    nlist = int(np.sqrt(n))
+    index = faiss.IndexIVFFlat(
+        faiss.IndexFlatIP(dim), dim, nlist, faiss.METRIC_INNER_PRODUCT
+    )
+    index.train(vectors)
+    index.add(vectors)
+    index.nprobe = max(1, nlist // NPROBE_SHARE)
+    return index
+
+
 def bench_ann(config: DatasetConfig, split: str) -> list[dict]:
     """Flat, IVF, HNSW and a plain matmul over the same vectors.
 
@@ -119,9 +139,6 @@ def bench_ann(config: DatasetConfig, split: str) -> list[dict]:
     exact.add(vectors)
     _, truth = exact.search(sample, RECALL_DEPTH)
 
-    # nlist by the usual sqrt(n) rule; nprobe at 8% of the lists, which is the
-    # setting a deployment would reach for before it tuned anything.
-    nlist = int(np.sqrt(n))
     rows: list[dict] = []
     for name in ("flat", "ivf", "hnsw", "numpy"):
         started = time.perf_counter()
@@ -129,12 +146,7 @@ def bench_ann(config: DatasetConfig, split: str) -> list[dict]:
             index = faiss.IndexFlatIP(dim)
             index.add(vectors)
         elif name == "ivf":
-            index = faiss.IndexIVFFlat(
-                faiss.IndexFlatIP(dim), dim, nlist, faiss.METRIC_INNER_PRODUCT
-            )
-            index.train(vectors)
-            index.add(vectors)
-            index.nprobe = max(1, nlist // 12)
+            index = ivf_index(vectors)
         elif name == "hnsw":
             index = faiss.IndexHNSWFlat(dim, 32, faiss.METRIC_INNER_PRODUCT)
             index.hnsw.efConstruction = 200
@@ -245,16 +257,10 @@ def bench_scale(config: DatasetConfig, split: str) -> list[dict]:
                 started = time.perf_counter()
                 if name == "flat":
                     index = faiss.IndexFlatIP(dim)
+                    index.add(vectors)
                 else:
-                    nlist = int(np.sqrt(n))
-                    index = faiss.IndexIVFFlat(
-                        faiss.IndexFlatIP(dim), dim, nlist, faiss.METRIC_INNER_PRODUCT
-                    )
-                    index.train(vectors)
-                index.add(vectors)
+                    index = ivf_index(vectors)
                 build_seconds = time.perf_counter() - started
-                if name == "ivf":
-                    index.nprobe = max(1, int(np.sqrt(n)) // 12)
                 latency = search_latency(index, sample)
                 del index
             row = {
